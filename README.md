@@ -117,7 +117,7 @@ into `Geodata/Classic/L2J` and `L2OFF`. Both use normal numeric filenames.
 Door/water XML places Classic data in `Classic` under the selected output (inside each profile folder for all-profile exports).
 
 For doors and water, choose L2JServer, aCis, L2Scripts, L2jMabios or L2OFF.
-Geodata ignores that choice and writes L2J and L2OFF. Combine XML produces
+On Geodata, that dropdown chooses L2J, conv.dat, or both. Combine XML produces
 one `doors.xml` or `water.xml` per selected XML profile and variant instead of
 per-map XML. The two data types retain their own server schemas. L2OFF retains
 script fragments. Duplicate door IDs across maps reject combined XML.
@@ -150,7 +150,7 @@ are rejected. UI runs save their list in `SelectedMaps.txt`. The older CLI
 Geodata reads `.unr` maps and their referenced client assets directly. Keep the
 client's Maps, System, StaticMeshes and Textures directories together.
 The CPU core builds 16-unit cells, stacked floors, headroom and four movement
-flags, then writes L2J and L2OFF in separate folders. Both files store the same
+flags, then writes the formats you chose. L2J and conv.dat store the same
 heights and the same north, south, east and west bits. Diagonal movement is not written.
 
 - `L2J/XX_YY.l2j`: packed height plus four movement directions.

@@ -13,6 +13,7 @@ namespace extractor {
 inline std::vector<std::filesystem::path> requestedMaps;
 inline bool allVariants=false, combineXml=false;
 inline bool debugFiles=true;
+inline std::string geodataFormat="both";
 inline std::string targetProfile="all";
 inline bool profileEnabled(const std::string& profile) { return targetProfile=="all" || targetProfile==profile; }
 inline std::filesystem::path profileFolder(const std::filesystem::path& root,const std::string& profile) { return !debugFiles && targetProfile!="all" ? root : root/profile; }

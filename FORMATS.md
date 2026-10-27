@@ -42,7 +42,9 @@ from the map, without looking up engine/gameplay class packages.
 ## Geodata formats
 
 The generator writes L2J and L2OFF/PTS from the same collision result, one folder
-per format. Only the four cardinal directions are stored. East is bit 1 (+X),
+per format. `--geo both` (the default), `--geo l2j` or `--geo l2off` chooses which
+folders are written. The Geodata tile uses the same choice. Only the four cardinal
+directions are stored. East is bit 1 (+X),
 West is bit 2 (-X), South is bit 4 (+Y), North is bit 8 (-Y). A set bit is walkable.
 All fields are little endian. L2J uses
 byte block tags 0/1/2, raw signed flat height and packed complex/multilayer

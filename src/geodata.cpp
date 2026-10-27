@@ -616,7 +616,9 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
     for (const auto& block : geo->blocks) if (block) for (const auto& cell : *block) count += cell.size();
     if (!count) throw std::runtime_error("No walkable cells in the selected tile; no geodata published");
     fs::create_directories(output);
-    const std::array<std::pair<Format, std::wstring>, 2> formats{{{Format::L2J, L"L2J"}, {Format::L2OFF, L"L2OFF"}}};
+    std::vector<std::pair<Format, std::wstring>> formats;
+    if (geodataFormat != "l2off") formats.push_back({Format::L2J, L"L2J"});
+    if (geodataFormat != "l2j") formats.push_back({Format::L2OFF, L"L2OFF"});
     for (const auto& [format, name] : formats) {
         const auto folder = output / name;
         fs::create_directories(folder);
@@ -634,8 +636,8 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
         + "Native UE2 client collision; dynamic doors are exported separately. Test movement before replacing a live server.\n"
         + "Settings: cell 16, height unit 8, terrain +26.296875, mesh +26.5, model +26.875 (top span +29.375), truncate toward zero, headroom 46, stored step 24, steep climb 3.125, walk angle 45.573.\n"
         + "Column tops and PlayerStarts are kept; every other floor must be reachable. A stored step of 24 is open on every floor. Open 8x8 blocks may move by at most 24. Empty cells are closed at -16352.\n"
-        + "Formats: L2J/*.l2j and L2OFF/*_conv.dat (PTS). Both store four cardinal directions. No live client/server files modified.\n");
-    std::cerr << "Geodata complete: " << count << " layers; L2J, L2OFF.\n";
+        + "Formats: " + (geodataFormat == "l2j" ? "L2J/*.l2j" : geodataFormat == "l2off" ? "L2OFF/*_conv.dat" : "L2J/*.l2j and L2OFF/*_conv.dat") + ". Four cardinal directions. No live client/server files modified.\n");
+    std::cerr << "Geodata complete: " << count << " layers; " << (geodataFormat == "l2j" ? "L2J" : geodataFormat == "l2off" ? "L2OFF" : "L2J, L2OFF") << ".\n";
     return 0;
 }
 

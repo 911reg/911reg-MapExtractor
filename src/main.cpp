@@ -210,7 +210,7 @@ static int run(int argc, wchar_t** argv) {
         std::cout << "Language checks passed: " << i18n::languages().size() << '\n'; return 0;
     }
     if (std::wstring(argv[1]) == L"--help") {
-        std::cout << "911reg MapExtractor 0.7.0 | CPU only\n"
+        std::cout << "911reg MapExtractor 0.7.1 | CPU only\n"
             << "MapExtractor scan <client-folder-or-map.unr> --output <manifest.json> [--threads 1..64]\n"
             << "MapExtractor doors <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
             << "MapExtractor water <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
@@ -219,7 +219,7 @@ static int run(int argc, wchar_t** argv) {
             << "All native tasks accept --map-list <UTF-8-file> with one absolute UNR path per line to process only those maps.\n"
             << "--all-variants exports normal and Classic maps separately. Doors/water accept --server <all|l2jserver|acis|l2scripts|mobius|l2off> and --combine-xml.\n"
             << "The window label L2jMabios is the mobius profile. --simple-output omits debug reports and flattens single-server door/water output.\n"
-            << "Geodata reads native UNR terrain, BSP, static-mesh and blocking-volume collision and writes L2J and L2OFF, four directions, same cells.\n";
+            << "Geodata reads native UNR terrain, BSP, static-mesh and blocking-volume collision. --geo <both|l2j|l2off> chooses L2J *.l2j, L2OFF *_conv.dat, or both. Same cells, four directions.\n";
         return 0;
     }
     const bool doors = std::wstring(argv[1]) == L"doors";
@@ -249,6 +249,10 @@ static int run(int argc, wchar_t** argv) {
         if (++i >= argc) throw std::runtime_error("Missing option value");
         if (option == L"--output" && output.empty()) output = fs::absolute(argv[i]);
         else if (option == L"--threads") workers = threads(pathText(fs::path(argv[i])));
+        else if (option == L"--geo") {
+            extractor::geodataFormat=pathText(fs::path(argv[i]));
+            if (extractor::geodataFormat!="both" && extractor::geodataFormat!="l2j" && extractor::geodataFormat!="l2off") throw std::runtime_error("--geo must be both, l2j, or l2off");
+        }
         else if (option == L"--server") {
             extractor::targetProfile=pathText(fs::path(argv[i]));
             if (extractor::targetProfile!="all" && extractor::targetProfile!="l2jserver" && extractor::targetProfile!="acis" && extractor::targetProfile!="l2scripts" && extractor::targetProfile!="mobius" && extractor::targetProfile!="l2off") throw std::runtime_error("Unknown server profile");

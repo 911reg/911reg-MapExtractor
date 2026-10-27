@@ -255,16 +255,29 @@ HWND preferClassicButton,preferNormalButton;
 HWND mapList,mapFilter,mapFilterLabel,mapLabel,mapCount,selectAllButton,clearMapsButton,serverSelector,combineButton;
 std::vector<std::filesystem::path> availableMaps;
 HWND serverLabel;
-bool updatingMaps=false,combineResults=true,debugResults=false,verificationSimple=false;
-std::string selectedServer="l2jserver";
+bool updatingMaps=false,combineResults=true,debugResults=false,verificationSimple=false,lockMapSelection=false;
+std::string selectedServer="l2jserver",geoFormat="both";
 std::vector<std::string> visibleServers;
 std::filesystem::path preferencesPath,selectionPath;
 void savePreferences() {
     if (verifying) return;
-    if (!extractor::UiPreferences{selectedServer,combineResults,debugResults}.save(preferencesPath)) SetWindowTextW(status,i18n::tr("settings_error").c_str());
+    if (!extractor::UiPreferences{selectedServer,combineResults,debugResults,geoFormat}.save(preferencesPath)) SetWindowTextW(status,i18n::tr("settings_error").c_str());
 }
 void populateServers() {
     visibleServers.clear(); SendMessageW(serverSelector,CB_RESETCONTENT,0,0);
+    if (taskMode==3) {
+        const std::array<std::pair<const char*,const char*>,3> choices{{{"both","geo_both"},{"l2j","geo_l2j"},{"l2off","geo_conv"}}};
+        int selected=0;
+        for (int i=0;i<3;++i) {
+            const auto label=i18n::tr(choices[size_t(i)].second);
+            if (geoFormat==choices[size_t(i)].first) selected=i;
+            SendMessageW(serverSelector,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label.c_str()));
+        }
+        SendMessageW(serverSelector,CB_SETCURSEL,selected,0);
+        tipKeys[serverSelector]="tip_geo_format";
+        return;
+    }
+    tipKeys[serverSelector]="tip_server";
     for (size_t i=0;i<extractor::serverProfiles.size();++i) {
         const auto& profile=extractor::serverProfiles[i]; if (profile=="all" && selectedServer!="all") continue;
         const auto label=i==5 ? i18n::tr("server_all") : std::array<std::wstring,5>{L"L2JServer",L"aCis",L"L2Scripts",L"L2jMabios",L"L2OFF"}[i];
@@ -288,7 +301,9 @@ void populateMapList(bool reload) {
     try {
         if (reload) {
             const auto root=std::filesystem::weakly_canonical(clientMaps());
-            if (root!=selectedMapsRoot) {
+            std::error_code sameRoot;
+            const bool newClient=selectedMapsRoot.empty() || !std::filesystem::equivalent(root,selectedMapsRoot,sameRoot) || sameRoot;
+            if (newClient) {
                 availableMaps.clear(); selectedMaps.clear(); selectedMapsRoot=root;
                 if (!text(input).empty() && std::filesystem::is_directory(root)) {
                     availableMaps=extractor::selectMaps(root,false);
@@ -382,7 +397,7 @@ void updateLanguage() {
         setText(preferClassicButton,"maps_prefer_classic"); setText(preferNormalButton,"maps_prefer_normal"); setText(mapLabel,"maps_title"); setText(selectAllButton,"maps_all"); setText(clearMapsButton,"maps_none"); setText(combineButton,"combine_xml");
         setText(mapFilterLabel,"maps_search");
         SendMessageW(mapFilter,EM_SETCUEBANNER,TRUE,reinterpret_cast<LPARAM>(i18n::tr("maps_search").c_str()));
-        setText(serverLabel,"server_type");
+        setText(serverLabel,taskMode==3 ? "geo_format" : "server_type");
         populateServers();
         updateMapCount();
     }
@@ -618,14 +633,16 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const auto change=reinterpret_cast<NMLISTVIEW*>(lParam);
             if ((change->uOldState^change->uNewState)&LVIS_STATEIMAGEMASK) return TRUE;
         }
-        if (header->hwndFrom==mapList && header->code==LVN_ITEMCHANGED && !updatingMaps && !process) {
+        if (header->hwndFrom==mapList && header->code==LVN_ITEMCHANGED && !updatingMaps && !process && !lockMapSelection) {
             const auto change=reinterpret_cast<NMLISTVIEW*>(lParam);
             if (change->iItem>=0 && ((change->uOldState^change->uNewState)&LVIS_STATEIMAGEMASK)) {
+                const int image=int(ListView_GetItemState(mapList,change->iItem,LVIS_STATEIMAGEMASK)>>12);
+                if (image<1) return 0;
                 LVITEMW item{}; item.mask=LVIF_PARAM; item.iItem=change->iItem;
                 if (ListView_GetItem(mapList,&item) && size_t(item.lParam)<availableMaps.size()) {
                     const auto& path=availableMaps[size_t(item.lParam)];
                     std::erase(selectedMaps,path);
-                    if (ListView_GetCheckState(mapList,change->iItem)) selectedMaps.push_back(path);
+                    if (image==2) selectedMaps.push_back(path);
                     std::sort(selectedMaps.begin(),selectedMaps.end()); updateMapCount();
                 }
             }
@@ -707,6 +724,10 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (LOWORD(wParam)==117 && !process) { combineResults=!combineResults; savePreferences(); InvalidateRect(combineButton,nullptr,TRUE); return 0; }
         if (LOWORD(wParam)==116 && HIWORD(wParam)==CBN_SELCHANGE) {
             const auto index=SendMessageW(serverSelector,CB_GETCURSEL,0,0);
+            if (taskMode==3) {
+                geoFormat=index==1 ? "l2j" : index==2 ? "l2off" : "both";
+                savePreferences(); return 0;
+            }
             if (index>=0 && size_t(index)<visibleServers.size()) selectedServer=visibleServers[size_t(index)];
             savePreferences(); EnableWindow(combineButton,taskMode<2 && selectedServer!="l2off"); return 0;
         }
@@ -714,13 +735,13 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if ((LOWORD(wParam)==118 || LOWORD(wParam)==119) && !process) { selectedMaps=LOWORD(wParam)==118 ? availableMaps : std::vector<std::filesystem::path>{}; populateMapList(false); return 0; }
         if (LOWORD(wParam)==114 && HIWORD(wParam)==EN_CHANGE) { populateMapList(false); return 0; }
         if (HIWORD(wParam) == EN_CHANGE || (LOWORD(wParam) == 109 && HIWORD(wParam) == CBN_EDITCHANGE)) {
-            if (LOWORD(wParam)==109 && !process) populateMapList(true);
+            if (LOWORD(wParam)==109 && !process && !lockMapSelection) populateMapList(true);
             EnableWindow(startButton,!process && sourceReady() && !text(output).empty());
             return 0;
         }
         if (LOWORD(wParam) == 109 && HIWORD(wParam) == CBN_SELCHANGE) {
             const auto index = SendMessageW(input,CB_GETCURSEL,0,0);
-            if (index != CB_ERR) {
+            if (index != CB_ERR && !lockMapSelection) {
                 const auto length = SendMessageW(input,CB_GETLBTEXTLEN,index,0);
                 std::wstring value(size_t(length)+1,L'\0');
                 SendMessageW(input,CB_GETLBTEXT,index,reinterpret_cast<LPARAM>(value.data()));
@@ -737,8 +758,8 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (selected >= 0 && selected <= 3) taskMode = unsigned(selected);
             for (auto tile:taskTiles) InvalidateRect(tile,nullptr,TRUE);
             EnableWindow(serverSelector,TRUE); EnableWindow(combineButton,taskMode<2 && selectedServer!="l2off");
-
-
+            if (serverLabel) setText(serverLabel,taskMode==3 ? "geo_format" : "server_type");
+            populateServers();
             ShowWindow(capability,SW_SHOW); InvalidateRect(window,nullptr,TRUE);
             setText(capability,"variants_hint");
             EnableWindow(startButton,sourceReady() && !text(output).empty());
@@ -753,6 +774,8 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             ShellExecuteW(window,L"open",runFolder.c_str(),nullptr,nullptr,SW_SHOWNORMAL);
         } else if (LOWORD(wParam) == 103 && !process) {
             if (selectedMapMode && selectedMaps.empty()) { setText(status,"no_maps"); return 0; }
+            const auto chosenMaps=selectedMaps;
+            lockMapSelection=true;
             auto source = singleMap ? text(mapInput) : text(input);
             try {
                 auto folder = std::filesystem::path(source);
@@ -769,12 +792,12 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                     }
                 }
                 if (!hasMap) {
-                    setText(status,"no_maps"); return 0;
+                    lockMapSelection=false; setText(status,"no_maps"); return 0;
                 }
                 source = singleMap ? map.wstring() : folder.wstring();
                 rememberClient(folder);
                 const auto destination=std::filesystem::weakly_canonical(std::filesystem::absolute(text(output)));
-                if (!confirmClearOutput(window,destination)) return 0;
+                if (!confirmClearOutput(window,destination)) { lockMapSelection=false; return 0; }
                 const auto candidate=destination;
                 std::filesystem::create_directories(candidate);
                 if (selectedMapMode) {
@@ -785,12 +808,12 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                         selectionPath=filename;
                     }
                     std::ofstream selection(selectionPath,std::ios::binary);
-                    for (const auto& selected : selectedMaps) selection << extractor::output::utf8(selected) << "\n";
+                    for (const auto& selected : chosenMaps) selection << extractor::output::utf8(selected) << "\n";
                     selection.close(); if (!selection) throw std::runtime_error("Cannot save selected maps");
                 }
                 runFolder = candidate; manifest = extractor::taskOutput(runFolder,taskMode).wstring();
             } catch (const std::exception&) {
-                setText(status,"folder_error"); return 0;
+                lockMapSelection=false; setText(status,"folder_error"); return 0;
             }
             wchar_t executable[32768]{};
             GetModuleFileNameW(nullptr,executable,32768);
@@ -799,12 +822,13 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (combineResults && taskMode<2 && selectedServer!="l2off") command+=L" --combine-xml";
             command+=L" --server "+quote(std::wstring(selectedServer.begin(),selectedServer.end()));
             if (!debugResults) command+=L" --simple-output";
+            if (taskMode==3) command+=L" --geo "+std::wstring(geoFormat.begin(),geoFormat.end());
             if (selectedMapMode) command+=L" --map-list "+quote(selectionPath.wstring());
             STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION child{};
             SECURITY_ATTRIBUTES security{sizeof(security),nullptr,TRUE};
             HANDLE writer = nullptr;
             if (!CreatePipe(&scanPipe,&writer,&security,0)) {
-                setText(status,"progress_error"); return 0;
+                lockMapSelection=false; setText(status,"progress_error"); return 0;
             }
             SetHandleInformation(scanPipe,HANDLE_FLAG_INHERIT,0);
             HANDLE nullInput = CreateFileW(L"NUL",GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,&security,OPEN_EXISTING,0,nullptr);
@@ -816,11 +840,11 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (!launched) {
                 CloseHandle(scanPipe); scanPipe = nullptr;
                 if (!debugResults && !selectionPath.empty()) { std::error_code error; std::filesystem::remove(selectionPath,error); }
-                setText(status,"launch_error"); return 0;
+                lockMapSelection=false; setText(status,"launch_error"); return 0;
             }
             scanLog.clear(); displayedLog=0; SetWindowTextW(logView,L"");
             if (debugResults) jobLog.open(runFolder/L"911reg.log",std::ios::binary); SendMessageW(progressBar,PBM_SETRANGE32,0,100); SendMessageW(progressBar,PBM_SETPOS,0,0);
-            CloseHandle(child.hThread); process = child.hProcess;
+            CloseHandle(child.hThread); process = child.hProcess; lockMapSelection=false;
             EnableWindow(startButton,FALSE);
             EnableWindow(input,FALSE); EnableWindow(output,FALSE);
             EnableWindow(inputButton,FALSE); EnableWindow(outputButton,FALSE); EnableWindow(openButton,FALSE); EnableWindow(clearOutputButton,FALSE);
@@ -875,7 +899,7 @@ int showUi() {
     wchar_t settingsExecutable[32768]{}; GetModuleFileNameW(nullptr,settingsExecutable,32768);
     preferencesPath=extractor::settingsFile(std::filesystem::path(settingsExecutable).parent_path());
     const auto preferences=extractor::UiPreferences::load(preferencesPath);
-    selectedServer=preferences.server; combineResults=preferences.combine; debugResults=false;
+    selectedServer=preferences.server; combineResults=preferences.combine; debugResults=false; geoFormat=preferences.geodata;
     // The window never writes debug files. The verify path still does, unless the simple-output check is running.
     if (verifying && previewPath.empty() && !verificationSimple) { selectedServer="all"; combineResults=false; debugResults=true; }
     if (verificationSimple) { selectedServer="l2jserver"; combineResults=true; debugResults=false; }
