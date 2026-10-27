@@ -1,0 +1,1 @@
+door_begin [{{scriptName}}] type=normal_type editor_id={{id}} open_method=by_npc height={{rangeHeight}} hp=158250 physical_defence=644 magical_defence=518 pos={ {{x}};{{y}};{{z}} } range={ { {{n1x}};{{n1y}};{{n1z}} };{ {{n2x}};{{n2y}};{{n2z}} };{ {{n3x}};{{n3y}};{{n3z}} };{ {{n4x}};{{n4y}};{{n4z}} } } door_end

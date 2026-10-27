@@ -1,0 +1,20 @@
+#pragma once
+#include "map_selection.h"
+
+namespace extractor {
+inline void writeExportReadme(const std::filesystem::path& root,const std::string& kind) {
+    std::string text;
+    const auto server=targetProfile=="all" ? "your selected server format" : targetProfile;
+    if (kind=="GEODATA") {
+        text="GEODATA - WHAT TO COPY\r\n\r\n1. Stop your game server before replacing its data.\r\n2. For an L2J-family server, copy the files from L2J into the server's configured geodata folder.\r\n3. L2OFF contains PTS-format files. Use only ONE format. Do not copy both folders into the same directory.\r\n4. Classic contains an alternative map set. Use Classic files only with Classic maps; they replace the normal files for those regions.\r\n\r\nThe exact geodata directory depends on your server configuration. L2J and L2OFF are the same cells and the same four directions. Test movement before using the files on a live server.\r\n";
+    } else if (kind=="DOORS") {
+        text="DOORS - WHAT TO COPY\r\n\r\nServer format: "+std::string(server)+"\r\n\r\n1. Back up your server's existing door definitions.\r\n2. Use doors.xml, or the per-map XML files if you turned off the one-file option.\r\n3. Replace or merge matching door IDs in the file loaded by your server. Keep your server's HP, defenses, ownership and opening scripts. These files provide client geometry, not recovered gameplay rules.\r\n4. Restart or reload door data using your server's normal procedure.\r\n\r\nClient names (optional):\r\n- saticobject-e_ClientDat.txt: import using ClientDat's staticobject text format.\r\n- staticobject-e_FileEdit.txt: import using FileEdit's ID/name text format.\r\nBack up the client DAT before editing it.\r\n\r\nClassic contains alternative definitions for Classic maps. Use one map version at a time; do not merge both sets.\r\nThe exact server filename and directory vary by server version.\r\n";
+        if (targetProfile=="l2off" || targetProfile=="all") text+="\r\nL2OFF: merge door_begin records from the .txt files into Script/doordata.txt by editor_id. They are fragments, not a replacement for the full script. Preserve existing script names, references and stats.\r\n";
+    } else if (kind=="WATER") {
+        text="WATER ZONES - WHAT TO COPY\r\n\r\nServer format: "+std::string(server)+"\r\n\r\n1. Back up your server's existing water-zone definitions.\r\n2. Use water.xml, or the per-map XML files if you turned off the one-file option.\r\n3. Add these water zones to the zone XML loaded by your server. Keep unrelated zones. Do not load the same water zones twice.\r\n4. Restart or reload zone data using your server's normal procedure.\r\n\r\naCis: use the WaterZone loader's zone file.\r\nL2Scripts: keep the matching zones schema and DTD expected by your version.\r\nClassic contains alternative definitions. Use them only with Classic maps.\r\nThe exact zone filename and directory vary by server version.\r\n";
+        if (targetProfile=="l2off" || targetProfile=="all") text+="\r\nL2OFF: merge the .txt area fragments into Script/areadata.txt. Keep existing non-water areas. Do not replace the full script with these fragments.\r\n";
+    } else text="MAP CHECK\r\n\r\nmap-details.json is a technical inventory of the selected client maps. It is not a file to install on your server.\r\n";
+    if (targetProfile=="all" && kind!="GEODATA") text+="\r\nChoose only the folder matching your server. Do not install every server format.\r\n";
+    output::save(root/("README_"+kind+".txt"),text);
+}
+}

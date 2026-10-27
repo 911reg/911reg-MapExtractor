@@ -1,0 +1,35 @@
+# Build trees
+build/
+out/
+cmake-build-*/
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.opendb
+
+# Installed program and anything it writes beside the exe
+dist/
+settings.ini
+911reg.ini
+
+# Extraction results
+Output/
+
+# Compiler leftovers
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.exe
+
+# OS
+Thumbs.db
+Desktop.ini

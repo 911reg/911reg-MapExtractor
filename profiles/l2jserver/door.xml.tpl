@@ -1,0 +1,1 @@
+  <door id="{{id}}" name="{{name}}" pos="{{x}};{{y}};{{z}}" height="{{height}}" node1="{{n1x}},{{n1y}}" node2="{{n2x}},{{n2y}}" node3="{{n3x}},{{n3y}}" node4="{{n4x}},{{n4y}}" nodeZ="{{minZ}}" open_method="0" baseHpMax="158250" basePDef="644" baseMDef="518" default_status="close" />
