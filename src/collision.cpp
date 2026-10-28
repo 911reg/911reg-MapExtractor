@@ -62,8 +62,11 @@ class Files {
 public:
     explicit Files(const std::filesystem::path& map) {
         root=std::filesystem::canonical(map).parent_path();
-        while (root.has_parent_path() && root!=root.parent_path() && !std::filesystem::is_directory(root/"System")) root=root.parent_path();
-        if (!std::filesystem::is_directory(root/"System")) throw std::runtime_error("Cannot find this map's client root (System folder required)");
+        const auto clientRoot=[](const std::filesystem::path& folder) {
+            return std::filesystem::is_directory(folder/"System") || (std::filesystem::is_directory(folder/"Maps") && std::filesystem::is_directory(folder/"StaticMeshes") && std::filesystem::is_directory(folder/"Textures"));
+        };
+        while (root.has_parent_path() && root!=root.parent_path() && !clientRoot(root)) root=root.parent_path();
+        if (!clientRoot(root)) throw std::runtime_error("Cannot find this map's client root (System or Maps/StaticMeshes/Textures folders required)");
         for (const auto& dir:{"StaticMeshes","Textures","System","Maps"}) {
             const auto folder=root/dir; if (!std::filesystem::is_directory(folder)) continue;
             for (const auto& entry:std::filesystem::directory_iterator(folder)) {
@@ -178,6 +181,22 @@ std::vector<Triangle> mesh(Files& files,const Object& object) {
     if (spans && r.offset!=boundary) throw std::runtime_error("Native collision triangle boundary mismatch");
     return result;
 }
+bool closedMesh(const std::vector<Triangle>& faces) {
+    using Key=std::array<double,3>;
+    std::map<std::pair<Key,Key>,std::pair<unsigned,int>> edges;
+    double volume=0;
+    for (const auto& t:faces) {
+        const std::array<Key,3> p{{{t.a.x,t.a.y,t.a.z},{t.b.x,t.b.y,t.b.z},{t.c.x,t.c.y,t.c.z}}};
+        for (size_t i=0;i<3;++i) {
+            auto a=p[i],b=p[(i+1)%3]; if (a==b) return false;
+            const int direction=a<b ? 1 : -1; if (b<a) std::swap(a,b);
+            auto& edge=edges[{a,b}]; if (++edge.first>2) return false; edge.second+=direction;
+        }
+        volume+=t.a.x*(t.b.y*t.c.z-t.b.z*t.c.y)+t.a.y*(t.b.z*t.c.x-t.b.x*t.c.z)+t.a.z*(t.b.x*t.c.y-t.b.y*t.c.x);
+    }
+    return volume>1e-6 && !edges.empty() && std::all_of(edges.begin(),edges.end(),[](const auto& edge) { return edge.second.first==2 && edge.second.second==0; });
+}
+
 std::vector<uint32_t> bitmap(const Properties& ps,const std::string& name,size_t bits,uint32_t fallback) {
     const auto p=prop(ps,name); if (!p) return std::vector<uint32_t>((bits+31)/32,fallback);
     if (p->kind!=9) throw std::runtime_error("Invalid terrain bitmap: "+name);
@@ -230,11 +249,36 @@ void materialPrefix(const Package& p,Reader& r) {
 }
 // TerrainInfo heightmap. G16 (format 10) or P8 scaled by 256, ToWorld axes,
 // QuadVisibilityBitmap and EdgeTurnBitmap. Invisible quads are omitted. Inverted flips winding.
+std::vector<Triangle> terrainGrid(unsigned width,unsigned height,Point origin,Point xAxis,Point yAxis,Point zAxis,const std::vector<uint16_t>& heights,const std::vector<uint32_t>& visible,const std::vector<uint32_t>& turned,bool inverted,unsigned quadsX=0,unsigned quadsY=0) {
+    if (heights.size()!=size_t(width)*height) throw std::runtime_error("Terrain sample count mismatch");
+    if (!quadsX) quadsX=width-1;
+    if (!quadsY) quadsY=height-1;
+    if (quadsX>width || quadsY>height) throw std::runtime_error("Terrain quad extent exceeds height texture");
+    const unsigned vertexWidth=quadsX+1,vertexHeight=quadsY+1;
+    std::vector<Point> vertices; vertices.reserve(size_t(vertexWidth)*vertexHeight);
+    for (unsigned y=0;y<vertexHeight;++y) for (unsigned x=0;x<vertexWidth;++x) {
+        const double z=heights[size_t(std::min(y,height-1))*width+std::min(x,width-1)];
+        const Point q{double(x)-origin.x,double(y)-origin.y,z-origin.z};
+        const Point world{float(q.x*xAxis.x+q.y*xAxis.y+q.z*xAxis.z),float(q.x*yAxis.x+q.y*yAxis.y+q.z*yAxis.z),float(q.x*zAxis.x+q.y*zAxis.y+q.z*zAxis.z)};
+        for (const double n:{world.x,world.y,world.z}) if (!std::isfinite(n) || std::abs(n)>16777216) throw std::runtime_error("Terrain world coordinate outside bounds");
+        vertices.push_back(world);
+    }
+    std::vector<Triangle> out;
+    auto emit=[&](size_t a,size_t b,size_t c) { if (inverted) std::swap(b,c); triangle(out,vertices[a],vertices[b],vertices[c]); };
+    for (unsigned y=0;y<quadsY;++y) for (unsigned x=0;x<quadsX;++x) {
+        const auto a=size_t(y)*vertexWidth+x,b=a+1,d=a+vertexWidth,c=d+1;
+        const auto bit=size_t(y)*width+x;
+        if (!(visible[bit/32]&(1u<<(bit%32)))) continue;
+        if (turned[bit/32]&(1u<<(bit%32))) { emit(a,b,d); emit(b,c,d); }
+        else { emit(a,b,c); emit(a,c,d); }
+    }
+    return out;
+}
 std::vector<Triangle> terrain(Files& files,const Object& object) {
     const auto& p=*object.package; const auto ps=p.properties(object.index); auto r=native(p,object.index);
     const auto sectors=count(r); for (size_t i=0;i<sectors;++i) r.compact();
     if (p.licensee<18) { const auto n=count(r,12); r.skip(n*12); }
-    r.skip(8);
+    const auto sectorsX=r.word(),sectorsY=r.word();
     if (p.licensee<18) { const auto n=count(r,24); r.skip(n*24); }
     const auto origin=point(r),xAxis=point(r),yAxis=point(r),zAxis=point(r); r.skip(48);
     const auto width=r.word(),height=r.word();
@@ -249,23 +293,15 @@ std::vector<Triangle> terrain(Files& files,const Object& object) {
     const auto end=pixels.word(); const auto bytes=count(pixels); const auto start=pixels.offset;
     if (end!=start+bytes || end>pixels.end || bytes!=samples*(format==10 ? 2 : 1)) throw std::runtime_error("Terrain heightmap mip boundary/size mismatch");
     pixels.skip(bytes); if (pixels.word()!=width || pixels.word()!=height) throw std::runtime_error("Terrain heightmap dimensions mismatch"); pixels.skip(2);
-    const size_t quadBits=size_t(height-1)*width-1;
+    unsigned quadsX=width-1,quadsY=height-1;
+    const int sectorSize=integer(ps,"TerrainSectorSize",16);
+    if (sectorSize<1 || sectorSize>256) throw std::runtime_error("Invalid terrain sector size");
+    if (uint64_t(sectorsX)*sectorsY==sectors && uint64_t(sectorsX)*sectorSize==width && uint64_t(sectorsY)*sectorSize==height) { quadsX=width; quadsY=height; }
+    const size_t quadBits=size_t(quadsY-1)*width+quadsX;
     const auto visible=bitmap(ps,"QuadVisibilityBitmap",quadBits,0xffffffff),turned=bitmap(ps,"EdgeTurnBitmap",quadBits,0);
-    std::vector<Point> vertices; vertices.reserve(samples); Reader heights{texture.package->data,start,end};
-    for (unsigned y=0;y<height;++y) for (unsigned x=0;x<width;++x) {
-        const double z=format==10 ? heights.word(2) : heights.byte()*256;
-        const Point q{double(x)-origin.x,double(y)-origin.y,z-origin.z};
-        vertices.push_back({float(q.x*xAxis.x+q.y*xAxis.y+q.z*xAxis.z),float(q.x*yAxis.x+q.y*yAxis.y+q.z*yAxis.z),float(q.x*zAxis.x+q.y*zAxis.y+q.z*zAxis.z)});
-    }
-    const bool inverted=flag(ps,"Inverted",false); std::vector<Triangle> out;
-    auto emit=[&](size_t a,size_t b,size_t c) { if (inverted) std::swap(b,c); triangle(out,vertices[a],vertices[b],vertices[c]); };
-    for (unsigned y=0;y+1<height;++y) for (unsigned x=0;x+1<width;++x) {
-        const auto a=size_t(y)*width+x,b=a+1,d=a+width,c=d+1;
-        if (!(visible[a/32]&(1u<<(a%32)))) continue;
-        if (turned[a/32]&(1u<<(a%32))) { emit(a,b,d); emit(b,c,d); }
-        else { emit(a,b,c); emit(a,c,d); }
-    }
-    return out;
+    std::vector<uint16_t> heights; heights.reserve(samples); Reader pixelsReader{texture.package->data,start,end};
+    for (size_t i=0;i<samples;++i) heights.push_back(uint16_t(format==10 ? pixelsReader.word(2) : pixelsReader.byte()*256));
+    return terrainGrid(width,height,origin,xAxis,yAxis,zAxis,heights,visible,turned,flag(ps,"Inverted",false),quadsX,quadsY);
 }
 }
 std::vector<size_t> liveActors(const Package& package) {
@@ -293,7 +329,7 @@ Scene read(const std::filesystem::path& path) {
     Files files(path); auto p=files.open(path); Scene scene;
     std::set<size_t> actors; const auto world=worldModel(*p,actors);
     std::map<std::string,std::vector<Triangle>> meshCache;
-    auto append=[&](const std::vector<Triangle>& triangles,const Transform* matrix,unsigned char kind) {
+    auto append=[&](const std::vector<Triangle>& triangles,const Transform* matrix,unsigned char kind,uint32_t object=0) {
         const auto start=scene.triangles.size();
         for (const auto& t:triangles) {
             if (matrix) {
@@ -302,7 +338,7 @@ Scene read(const std::filesystem::path& path) {
                 triangle(scene.triangles,a,b,c);
             } else triangle(scene.triangles,t.a,t.b,t.c);
         }
-        for (auto i=start;i<scene.triangles.size();++i) scene.triangles[i].kind=kind;
+        for (auto i=start;i<scene.triangles.size();++i) { scene.triangles[i].kind=kind; scene.triangles[i].object=object; scene.triangles[i].closed=triangles[i-start].closed; }
     };
     for (size_t i=0;i<p->exports.size();++i) {
         const auto type=p->className(i);
@@ -341,9 +377,10 @@ Scene read(const std::filesystem::path& path) {
             if (found==meshCache.end()) {
                 const auto object=files.resolve(p,ref,"Engine.StaticMesh");
                 auto faces=mesh(files,object);
+                const bool closed=closedMesh(faces); for (auto& face:faces) face.closed=closed;
                 found=meshCache.emplace(key,std::move(faces)).first;
             }
-            append(found->second,&matrix,0); scene.meshes+=found->second.size();
+            append(found->second,&matrix,0,uint32_t(i+1)); scene.meshes+=found->second.size();
         } catch (const std::exception& error) { scene.errors.push_back(p->exports[i].name+" ("+type+"): "+error.what()); }
     }
     return scene;

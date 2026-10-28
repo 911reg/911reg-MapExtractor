@@ -152,7 +152,7 @@ static bool contains(const Face& polygon, WaterPoint point) {
 }
 struct WaterZone { std::string actor, name; Face polygon; double low = 0, high = 0; };
 
-static std::vector<WaterZone> prism(const std::vector<Face>& faces,const std::string& actor,const std::string& name) {
+static std::vector<WaterZone> prism(const std::vector<Face>& faces,const std::string& actor,const std::string& name,bool decomposeHoles=false) {
     constexpr double tolerance = 0.01;
     double low = std::numeric_limits<double>::max(), high = -low;
     for (const auto& face : faces) for (const auto& p : face) { low = std::min(low,p.z); high = std::max(high,p.z); }
@@ -186,12 +186,15 @@ static std::vector<WaterZone> prism(const std::vector<Face>& faces,const std::st
         if (area(polygon) < 0) std::reverse(polygon.begin(),polygon.end());
         result.push_back({actor,name+"_"+std::to_string(result.size()+1),std::move(polygon),low,high});
     }
+    bool hasHoles=false;
     for (size_t i = 0; i < result.size(); ++i) for (size_t j = 0; j < result.size(); ++j)
-        if (i != j && contains(result[i].polygon,result[j].polygon[0])) throw std::runtime_error("Water footprint contains holes or nested loops");
+        if (i != j && contains(result[i].polygon,result[j].polygon[0])) hasHoles=true;
+    if (hasHoles && !decomposeHoles) throw std::runtime_error("Water footprint contains holes or nested loops");
     double footprintArea = 0, bottomArea = 0, topArea = 0;
     for (const auto& z : result) footprintArea += area(z.polygon);
     for (const auto& f : bottom) bottomArea += std::abs(area(f));
     for (const auto& f : top) topArea += std::abs(area(f));
+    if (hasHoles) footprintArea=bottomArea;
     if (std::abs(bottomArea-footprintArea) > std::max(0.1,footprintArea*0.000001) || std::abs(topArea-footprintArea) > std::max(0.1,footprintArea*0.000001))
         throw std::runtime_error("Water cap coverage is incomplete or overlapping");
     // Side faces must cover every boundary wall, not just share the same XY bounds.
@@ -216,17 +219,21 @@ static std::vector<WaterZone> prism(const std::vector<Face>& faces,const std::st
         const double expected = std::hypot(b.x-a.x,b.y-a.y)*(high-low);
         if (std::abs(wallArea[e]-expected) > std::max(0.1,expected*0.000001)) throw std::runtime_error("Water boundary wall coverage mismatch");
     }
+    if (hasHoles) {
+        result.clear();
+        for (auto cap:bottom) { if (area(cap)<0) std::reverse(cap.begin(),cap.end()); result.push_back({actor,name+"_"+std::to_string(result.size()+1),std::move(cap),low,high}); }
+    }
     return result;
 }
 
 static bool isWater(const std::string& type,const std::vector<Property>& properties) {
-    if (type != "Gameplay.WaterVolume" && type != "Engine.WaterVolume") return false;
+    const bool known=type=="Gameplay.WaterVolume" || type=="Engine.WaterVolume";
     if (const auto deleted = property(properties,"bDeleteMe"); deleted && deleted->boolean) return false;
     if (const auto flag = property(properties,"bWaterVolume")) {
         if (flag->kind != 3) throw std::runtime_error("Invalid water-volume flag");
         return flag->boolean;
     }
-    return defaults::waterVolume;
+    return known && defaults::waterVolume;
 }
 static std::vector<Face> waterFaces(const Package& package,const std::vector<Property>& properties) {
     const auto brush = property(properties,"Brush");
@@ -280,6 +287,136 @@ static std::optional<int32_t> priority(const std::vector<Property>& properties,c
     }
     if (p->kind != 2 || p->value.size() != 4) throw std::runtime_error("Invalid physics-volume priority");
     Reader reader{p->value}; return std::bit_cast<int32_t>(reader.word());
+}
+
+static double turn(WaterPoint a,WaterPoint b,WaterPoint c) { return (b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x); }
+static std::vector<Face> triangles(Face polygon) {
+    if (area(polygon)<0) std::reverse(polygon.begin(),polygon.end());
+    std::vector<Face> result;
+    while (polygon.size()>3) {
+        bool clipped=false;
+        for (size_t i=0;i<polygon.size();++i) {
+            const size_t a=(i+polygon.size()-1)%polygon.size(),b=(i+1)%polygon.size();
+            if (turn(polygon[a],polygon[i],polygon[b])<=1e-8) continue;
+            bool occupied=false;
+            for (size_t j=0;j<polygon.size();++j) if (j!=a && j!=i && j!=b && turn(polygon[a],polygon[i],polygon[j])>=-1e-8 && turn(polygon[i],polygon[b],polygon[j])>=-1e-8 && turn(polygon[b],polygon[a],polygon[j])>=-1e-8) occupied=true;
+            if (occupied) continue;
+            result.push_back({polygon[a],polygon[i],polygon[b]}); polygon.erase(polygon.begin()+i); clipped=true; break;
+        }
+        if (!clipped) throw std::runtime_error("Water polygon cannot be triangulated safely");
+    }
+    if (polygon.size()==3 && std::abs(area(polygon))>1e-8) result.push_back(std::move(polygon));
+    return result;
+}
+static Face halfplane(const Face& polygon,WaterPoint a,WaterPoint b,bool inside) {
+    Face result; if (polygon.empty()) return result;
+    auto side=[&](WaterPoint p) { return turn(a,b,p)*(inside ? 1 : -1); };
+    for (size_t i=0,j=polygon.size()-1;i<polygon.size();j=i++) {
+        const auto p=polygon[j],q=polygon[i]; const double u=side(p),v=side(q);
+        if ((u>=0)!=(v>=0)) { const double t=u/(u-v); result.push_back({p.x+(q.x-p.x)*t,p.y+(q.y-p.y)*t,0}); }
+        if (v>=0) result.push_back(q);
+    }
+    if (result.size()<3 || std::abs(area(result))<1e-6) result.clear();
+    return result;
+}
+static std::vector<WaterZone> subtractZone(const WaterZone& wet,const WaterZone& dry) {
+    if (wet.high<=dry.low || wet.low>=dry.high) return {wet};
+    std::vector<WaterZone> result;
+    if (wet.low<dry.low) { auto part=wet; part.high=dry.low; result.push_back(std::move(part)); }
+    if (wet.high>dry.high) { auto part=wet; part.low=dry.high; result.push_back(std::move(part)); }
+    auto remainder=wet.polygon;
+    for (size_t i=0;i<dry.polygon.size() && !remainder.empty();++i) {
+        auto outside=halfplane(remainder,dry.polygon[i],dry.polygon[(i+1)%dry.polygon.size()],false);
+        if (!outside.empty()) { auto part=wet; part.polygon=std::move(outside); part.low=std::max(wet.low,dry.low); part.high=std::min(wet.high,dry.high); result.push_back(std::move(part)); }
+        remainder=halfplane(remainder,dry.polygon[i],dry.polygon[(i+1)%dry.polygon.size()],true);
+    }
+    return result;
+}
+static std::vector<WaterZone> effectiveWater(const Package& package) {
+    struct Dry { std::vector<WaterZone> zones; std::optional<int> rank; std::string name; };
+    const auto actors=collision::liveActors(package);
+    std::vector<Dry> dry; std::vector<WaterZone> result;
+    for (const auto i:actors) {
+        const auto type=package.className(i); const auto ps=package.properties(i);
+        if (isWater(type,ps) || (type.find("PhysicsVolume")==std::string::npos && type.find("AirVolume")==std::string::npos)) continue;
+        if (const auto deleted=property(ps,"bDeleteMe"); deleted && deleted->boolean) continue;
+        if (!property(ps,"Brush")) continue;
+        const auto wet=property(ps,"bWaterVolume"); if (wet && wet->boolean) continue;
+        dry.push_back({prism(waterFaces(package,ps),package.exports[i].name,package.exports[i].name,true),priority(ps,type),package.exports[i].name});
+    }
+    for (const auto i:actors) {
+        const auto type=package.className(i); const auto ps=package.properties(i); if (!isWater(type,ps)) continue;
+        const auto rank=priority(ps,type);
+        auto wet=prism(waterFaces(package,ps),package.exports[i].name,package.exports[i].name,true);
+        for (const auto& d:dry) {
+            if (rank && d.rank && *d.rank<*rank) continue;
+            bool intersects=false;
+            for (const auto& a:wet) for (const auto& b:d.zones) {
+                VolumeBounds ab{{1e300,1e300,a.low},{-1e300,-1e300,a.high}},bb{{1e300,1e300,b.low},{-1e300,-1e300,b.high}};
+                for (auto p:a.polygon) { ab.low.x=std::min(ab.low.x,p.x); ab.low.y=std::min(ab.low.y,p.y); ab.high.x=std::max(ab.high.x,p.x); ab.high.y=std::max(ab.high.y,p.y); }
+                for (auto p:b.polygon) { bb.low.x=std::min(bb.low.x,p.x); bb.low.y=std::min(bb.low.y,p.y); bb.high.x=std::max(bb.high.x,p.x); bb.high.y=std::max(bb.high.y,p.y); }
+                intersects|=overlaps(ab,bb);
+            }
+            if (!intersects) continue;
+            if (!rank || !d.rank || *rank==*d.rank) throw std::runtime_error("Overlapping water/dry volumes have ambiguous priority: "+d.name);
+            std::vector<WaterZone> pieces;
+            for (const auto& zone:wet) for (auto face:triangles(zone.polygon)) { auto part=zone; part.polygon=std::move(face); pieces.push_back(std::move(part)); }
+            for (const auto& zone:d.zones) for (const auto& cut:triangles(zone.polygon)) {
+                auto clipping=zone; clipping.polygon=cut; std::vector<WaterZone> next;
+                for (const auto& part:pieces) { auto remainder=subtractZone(part,clipping); next.insert(next.end(),remainder.begin(),remainder.end()); if (next.size()>100000) throw std::runtime_error("Water subtraction complexity exceeds limit"); }
+                pieces=std::move(next);
+            }
+            wet=std::move(pieces);
+        }
+        result.insert(result.end(),wet.begin(),wet.end());
+    }
+    for (size_t i=0;i<result.size();++i) result[i].name+="_"+std::to_string(i+1);
+    return result;
+}
+static std::vector<off::Box> waterBoxes(const std::vector<const WaterZone*>& zones) {
+    std::vector<int> ys; size_t edges=0;
+    for (const auto zone:zones) for (const auto p:zone->polygon) { ys.push_back(int(p.y)); if (++edges>1000000) throw std::runtime_error("Water box union exceeds edge budget"); }
+    std::sort(ys.begin(),ys.end()); ys.erase(std::unique(ys.begin(),ys.end()),ys.end());
+    if (ys.size()>8192) throw std::runtime_error("Water box union exceeds strip budget");
+    auto ranges=[&](double y) {
+        std::vector<std::pair<double,double>> parts;
+        for (const auto zone:zones) {
+            std::vector<double> xs;
+            const auto& p=zone->polygon;
+            for (size_t i=0,j=p.size()-1;i<p.size();j=i++) if ((p[i].y>y)!=(p[j].y>y)) xs.push_back(p[i].x+(y-p[i].y)*(p[j].x-p[i].x)/(p[j].y-p[i].y));
+            std::sort(xs.begin(),xs.end()); if (xs.size()%2) throw std::runtime_error("Water union has invalid intersections");
+            for (size_t i=0;i<xs.size();i+=2) parts.emplace_back(xs[i],xs[i+1]);
+        }
+        std::sort(parts.begin(),parts.end()); std::vector<std::pair<double,double>> merged;
+        for (const auto p:parts) { if (!merged.empty() && p.first<=merged.back().second+1e-7) merged.back().second=std::max(merged.back().second,p.second); else merged.push_back(p); }
+        return merged;
+    };
+    std::vector<off::Box> result; std::map<std::pair<int,int>,size_t> active;
+    for (size_t strip=1;strip<ys.size();++strip) {
+        const double low=ys[strip-1],high=ys[strip]; const auto a=ranges(low+(high-low)*0.25),b=ranges(low+(high-low)*0.75);
+        if (a.size()!=b.size()) throw std::runtime_error("L2OFF water union is not orthogonal");
+        std::map<std::pair<int,int>,size_t> next;
+        for (size_t i=0;i<a.size();++i) {
+            if (std::abs(a[i].first-b[i].first)>1e-6 || std::abs(a[i].second-b[i].second)>1e-6 || std::abs(a[i].first-std::round(a[i].first))>1e-6 || std::abs(a[i].second-std::round(a[i].second))>1e-6) throw std::runtime_error("L2OFF water requires axis-aligned union boundaries");
+            const auto range=std::pair{int(std::round(a[i].first)),int(std::round(a[i].second))};
+            const auto previous=active.find(range);
+            if (previous!=active.end()) { result[previous->second].maxY=int(high); next[range]=previous->second; }
+            else { if (result.size()>=4096) throw std::runtime_error("L2OFF water box budget exceeded"); next[range]=result.size(); result.push_back({range.first,int(low),range.second,int(high)}); }
+        }
+        active=std::move(next);
+    }
+    return result;
+}
+
+bool waterContains(const WaterGeometry& zone,double x,double y) {
+    bool inside=false; const auto& p=zone.polygon;
+    for (size_t i=0,j=p.size()-1;i<p.size();j=i++) if ((p[i].y>y)!=(p[j].y>y) && x<(p[j].x-p[i].x)*(y-p[i].y)/(p[j].y-p[i].y)+p[i].x) inside=!inside;
+    return inside;
+}
+std::vector<WaterGeometry> readWaterGeometry(const std::filesystem::path& map) {
+    const auto zones=effectiveWater(Package::open(map)); std::vector<WaterGeometry> result;
+    for (const auto& zone:zones) { WaterGeometry out; out.low=zone.low; out.high=zone.high; for (const auto p:zone.polygon) out.polygon.push_back({p.x,p.y,p.z}); result.push_back(std::move(out)); }
+    return result;
 }
 
 int verifyWaterCore() {
@@ -383,48 +520,20 @@ int exportWater(const std::filesystem::path& client,const std::filesystem::path&
                 size_t mapAccepted = 0, candidateCount = 0;
                 try {
                     const auto package = Package::open(maps[mapIndex]);
-                    struct DryVolume { std::string name; VolumeBounds shape; std::optional<int32_t> priority; };
-                    std::vector<DryVolume> dryVolumes; bool unresolvedDry = false;
-                    for (size_t i = 0; i < package.exports.size(); ++i) {
-                        const auto type = package.className(i);
-                        if (type.find("PhysicsVolume") == std::string::npos && type.find("AirVolume") == std::string::npos) continue;
-                        try {
-                            const auto properties = package.properties(i);
-                            if (const auto deleted = property(properties,"bDeleteMe"); deleted && deleted->boolean) continue;
-                            const auto wet = property(properties,"bWaterVolume");
-                            if ((wet && wet->kind == 3 && wet->boolean) || !property(properties,"Brush")) continue;
-                            dryVolumes.push_back({package.exports[i].name,bounds(waterFaces(package,properties)),priority(properties,type)});
-                        } catch (const std::exception& error) {
-                            unresolvedDry = true; ++rejected;
-                            report << output::utf8(maps[mapIndex].filename()) << " / " << package.exports[i].name << ": Cannot resolve dry-volume geometry: " << error.what() << '\n';
-                        }
+                    zones=effectiveWater(package);
+                    std::set<std::string> acceptedActors;
+                    for (auto& part:zones) {
+                        acceptedActors.insert(part.actor);
+                        part.name=output::utf8(mapOutput(maps[mapIndex],root).stem())+"_"+part.name;
+                        part.polygon=integerPolygon(part.polygon);
+                        if (std::floor(part.high)<=std::ceil(part.low)) throw std::runtime_error("Water height disappears at integer precision");
                     }
-                    for (size_t i = 0; i < package.exports.size(); ++i) {
-                        const auto type = package.className(i);
-                        if (type != "Gameplay.WaterVolume" && type != "Engine.WaterVolume") continue;
-                        try {
-                            const auto properties = package.properties(i);
-                            if (!isWater(type,properties)) continue;
-                            ++candidateCount;
-                            const auto faces = waterFaces(package,properties);
-                            for (size_t f = 0; f < faces.size(); ++f) for (size_t v = 0; v < faces[f].size(); ++v) {
-                                const auto& p = faces[f][v]; rawFaces << package.exports[i].name << '\t' << f << '\t' << v << '\t' << p.x << '\t' << p.y << '\t' << p.z << '\n';
-                            }
-                            if (unresolvedDry) throw std::runtime_error("Unresolved dry volume prevents safe water export for this map");
-                            const auto waterBounds = bounds(faces);
-                            const auto waterPriority = priority(properties,type);
-                            for (const auto& dry : dryVolumes) {
-                                if (dry.priority && waterPriority && *dry.priority < *waterPriority) continue;
-                                if (overlaps(waterBounds,dry.shape)) throw std::runtime_error("Potential dry-volume priority overlap requires subtraction: " + dry.name);
-                            }
-                            auto parts = prism(faces,package.exports[i].name,output::utf8(mapOutput(maps[mapIndex],root).stem())+"_"+package.exports[i].name);
-                            for (auto& part : parts) {
-                                part.polygon = integerPolygon(part.polygon);
-                                if (std::floor(part.high) <= std::ceil(part.low)) throw std::runtime_error("Water height disappears at integer precision");
-                            }
-                            zones.insert(zones.end(),parts.begin(),parts.end()); ++mapAccepted;
-                        } catch (const std::exception& error) {
-                            ++rejected; report << output::utf8(maps[mapIndex].filename()) << " / " << package.exports[i].name << ": " << error.what() << '\n';
+                    candidateCount=mapAccepted=acceptedActors.size();
+                    if (debugFiles) for (const auto i:collision::liveActors(package)) {
+                        const auto ps=package.properties(i); if (!isWater(package.className(i),ps)) continue;
+                        const auto faces=waterFaces(package,ps);
+                        for (size_t f=0;f<faces.size();++f) for (size_t v=0;v<faces[f].size();++v) {
+                            const auto p=faces[f][v]; rawFaces<<package.exports[i].name<<'\t'<<f<<'\t'<<v<<'\t'<<p.x<<'\t'<<p.y<<'\t'<<p.z<<'\n';
                         }
                     }
                     auto relative = mapOutput(maps[mapIndex],root); relative.replace_extension(L".xml");
@@ -453,12 +562,13 @@ int exportWater(const std::filesystem::path& client,const std::filesystem::path&
                         std::string offBody;
                         const auto stem=mapOutput(maps[mapIndex],root).stem().wstring(); std::wsmatch region;
                         const bool numeric=std::regex_match(stem,region,std::wregex(LR"(^([0-9]{1,2})_([0-9]{1,2})$)"));
-                        for (const auto& zone:zones) {
+                        std::map<std::tuple<std::string,int,int>,std::vector<const WaterZone*>> groups;
+                        for (const auto& zone:zones) groups[{zone.actor,int(std::ceil(zone.low)),int(std::floor(zone.high))}].push_back(&zone);
+                        for (const auto& [key,parts]:groups) {
+                            const auto& zone=*parts.front();
                             try {
                                 if (!numeric) throw std::runtime_error("L2OFF map_no requires a numeric XX_YY map name");
-                                std::vector<std::array<int,2>> polygon;
-                                for (const auto& p:zone.polygon) polygon.push_back({int(p.x),int(p.y)});
-                                const auto boxes=off::boxes(polygon);
+                                const auto boxes=waterBoxes(parts);
                                 for (size_t i=0;i<boxes.size();++i) {
                                     const auto& b=boxes[i];
                                     offBody+=output::render(offEntry,{
@@ -506,7 +616,7 @@ int exportWater(const std::filesystem::path& client,const std::filesystem::path&
         << "Only closed vertical prisms are exported. Slopes, holes, invalid caps/walls and rounding failures are reported.\n"
         << "XY rounds to nearest integer; minZ=ceil(bottom), maxZ=floor(top). Original world faces are in raw/*.faces.tsv.\n"
         << "Potential dry-volume overrides at higher/unknown priority are rejected, not silently flooded.\n"
-        << "General class inheritance, legacy water ZoneInfo geometry and dry-volume subtraction are not implemented.\n"
+        << "Vertical-prism holes are decomposed and higher-priority dry prisms are subtracted. Equal/unknown overlapping priorities and sloped/legacy ZoneInfo volumes require review.\n"
         << "Review server loader placement before merging per-map files; aCis water output belongs in its WaterZone loader file.\n"
         << "L2OFF UTF-16LE fragments merge into areadata.txt. Exact axis-aligned rectangle decomposition only; no bounding-box enlargement.\n"
         << "Slanted water footprints remain available in XML profiles but are reported as L2OFF-only omissions.\n"

@@ -80,3 +80,47 @@ maps_prefer_normal	Prefer normal	Προτίμηση normal	Preferir normal	Prefe
 maps_prefer_classic	Prefer Classic	Προτίμηση Classic	Preferir Classic	Preferir Classic	Prefero Classic	Preferă Classic	Classic nutzen
 tip_prefer_normal	When both versions are checked, uncheck Classic. Maps without a checked counterpart stay checked.	Αν έχουν επιλεγεί και οι δύο εκδόσεις, αποεπιλέγεται η Classic. Οι υπόλοιποι χάρτες παραμένουν επιλεγμένοι.	Si ambas versiones están marcadas, desmarca Classic. Los mapas sin otra versión marcada permanecen seleccionados.	Se as duas versões estiverem marcadas, desmarca Classic. Mapas sem outra versão marcada continuam selecionados.	Kur të dy versionet janë zgjedhur, hiq Classic. Hartat pa version tjetër të zgjedhur mbeten të zgjedhura.	Dacă ambele versiuni sunt bifate, debifează Classic. Hărțile fără o altă versiune bifată rămân selectate.	Wenn beide Versionen ausgewählt sind, Classic abwählen. Karten ohne ausgewähltes Gegenstück bleiben ausgewählt.
 tip_prefer_classic	When both versions are checked, uncheck normal. Maps without a checked counterpart stay checked.	Αν έχουν επιλεγεί και οι δύο εκδόσεις, αποεπιλέγεται η κανονική. Οι υπόλοιποι χάρτες παραμένουν επιλεγμένοι.	Si ambas versiones están marcadas, desmarca la normal. Los mapas sin otra versión marcada permanecen seleccionados.	Se as duas versões estiverem marcadas, desmarca a normal. Mapas sem outra versão marcada continuam selecionados.	Kur të dy versionet janë zgjedhur, hiq normalin. Hartat pa version tjetër të zgjedhur mbeten të zgjedhura.	Dacă ambele versiuni sunt bifate, debifează versiunea normală. Hărțile fără o altă versiune bifată rămân selectate.	Wenn beide Versionen ausgewählt sind, Normal abwählen. Karten ohne ausgewähltes Gegenstück bleiben ausgewählt.
+tile_pathnodes	Pathnodes	Κόμβοι	Rutas	Rotas	Nyje	Noduri	Pfadknoten
+include_pathnodes	Generate pathnodes too	Δημιουργία κόμβων διαδρομής	Generar también rutas	Gerar rotas também	Gjenero edhe nyje	Generează și noduri	Auch Pfadknoten erstellen
+result_pathnodes	Pathnode files exported: {0}. Skipped: {1}.	Αρχεία κόμβων: {0}. Παραλείφθηκαν: {1}.	Archivos de rutas exportados: {0}. Omitidos: {1}.	Arquivos de rotas exportados: {0}. Ignorados: {1}.	Skedarë nyjesh të eksportuar: {0}. Anashkaluar: {1}.	Fișiere de noduri exportate: {0}. Omise: {1}.	Pfadknotendateien exportiert: {0}. Übersprungen: {1}.
+tip_pathnodes	Generate legacy .pn route nodes from the selected maps. Links follow collision and cannot cut through blocked corners.	Δημιουργία κόμβων .pn με έλεγχο συγκρούσεων.	Genera nodos .pn respetando las colisiones.	Gera nós .pn respeitando as colisões.	Gjenero nyje .pn sipas përplasjeve.	Generează noduri .pn respectând coliziunile.	Erstellt .pn-Pfadknoten unter Beachtung der Kollisionen.
+node_format	Pathnode format	Μορφή κόμβων	Formato de rutas	Formato de rotas	Formati i nyjeve	Format noduri	Pfadknotenformat
+pn_hint	Legacy .pn · collision-checked routes	Κόμβοι .pn · έλεγχος συγκρούσεων	Rutas .pn · colisiones comprobadas	Rotas .pn · colisões verificadas	Nyje .pn · përplasje të kontrolluara	Rute .pn · coliziuni verificate	.pn · kollisionsgeprüfte Routen
+studio_configuration	Configuration	Ρυθμίσεις	Configuración	Configuração	Konfigurimi	Configurare	Konfiguration
+studio_console	Console	Κονσόλα	Consola	Console	Konsola	Consolă	Konsole
+studio_clear_log	Clear	Σβήσιμο	Limpiar	Limpar	Pastro	Șterge	Leeren
+studio_save_log	Save log	Αποθήκευση	Guardar registro	Salvar log	Ruaj regjistrin	Salvează jurnal	Log speichern
+studio_idle	READY	ΕΤΟΙΜΟ	LISTO	PRONTO	GATI	PREGĂTIT	BEREIT
+studio_running	EXTRACTING	ΕΞΑΓΩΓΗ	EXTRAYENDO	EXTRAINDO	EKSTRAKTIM	EXTRAGERE	EXTRAKTION
+studio_map	Current map	Τρέχων χάρτης	Mapa actual	Mapa atual	Harta aktuale	Harta curentă	Aktuelle Karte
+studio_elapsed	Elapsed	Χρόνος	Tiempo	Tempo decorrido	Koha e kaluar	Timp scurs	Laufzeit
+studio_workers	CPU workers	Νήματα CPU	Hilos de CPU	Threads da CPU	Threads CPU	Fire CPU	CPU-Threads
+studio_eta	Remaining estimate	Εκτίμηση υπολοίπου	Tiempo restante estimado	Estimativa restante	Koha e mbetur	Timp rămas estimat	Geschätzter Rest
+studio_console_ready	Ready. Choose a client, select your maps, and start extraction.	Έτοιμο. Διάλεξε πελάτη, χάρτες και ξεκίνα την εξαγωγή.	Listo. Elige un cliente, selecciona los mapas e inicia la extracción.	Pronto. Escolha um cliente, selecione os mapas e inicie a extração.	Gati. Zgjidh klientin, hartat dhe nis ekstraktimin.	Pregătit. Alege un client, selectează hărțile și pornește extragerea.	Bereit. Client und Karten wählen und Extraktion starten.
+studio_progress	Progress	Πρόοδος	Progreso	Progresso	Progresi	Progres	Fortschritt
+studio_processed	Processed	Επεξεργασμένοι	Procesados	Processados	Përpunuar	Procesate	Verarbeitet
+studio_scanning	Scanning	Αναζήτηση	Buscando	Buscando	Kërkim	Căutare	Suche
+studio_parsing	Parsing	Ανάλυση	Analizando	Analisando	Analizim	Analizare	Analyse
+studio_writing	Writing	Εγγραφή	Guardando	Gravando	Shkrim	Scriere	Schreiben
+studio_normal	Normal	Κανονικός	Normal	Normal	Normal	Normal	Normal
+studio_donut_caption	Still round. Still extracting.	Ακόμα στρογγυλό. Ακόμα εξάγει.	Sigue redondo. Sigue extrayendo.	Ainda redondo. Ainda extraindo.	Ende i rrumbullakët. Ende ekstrakton.	Tot rotund. Tot extrage.	Immer rund. Extrahiert weiter.
+studio_extracting	Extracting	Εξαγωγή	Extrayendo	Extraindo	Ekstraktim	Extragere	Extraktion
+studio_stage_done	Done	Έτοιμο	Listo	Pronto	Gati	Gata	Fertig
+studio_minimize	Minimize	Ελαχιστοποίηση	Minimizar	Minimizar	Minimizo	Minimizează	Minimieren
+studio_close	Close	Κλείσιμο	Cerrar	Fechar	Mbyll	Închide	Schließen
+studio_stage_failed	Failed	Αποτυχία	Error	Falhou	Dështoi	Eșuat	Fehler
+studio_copy_log	Copy	Αντιγραφή	Copiar	Copiar	Kopjo	Copiază	Kopieren
+studio_copied	Console copied to the clipboard.	Η κονσόλα αντιγράφηκε στο πρόχειρο.	Consola copiada al portapapeles.	Console copiado para a área de transferência.	Konsola u kopjua në kujtesë.	Consola a fost copiată în clipboard.	Konsole in die Zwischenablage kopiert.
+studio_maps_empty	Choose a game folder to list its maps.	Διάλεξε φάκελο παιχνιδιού για να εμφανιστούν οι χάρτες.	Elige una carpeta del juego para ver sus mapas.	Escolha uma pasta do jogo para listar os mapas.	Zgjidh dosjen e lojës për të parë hartat.	Alege un folder al jocului pentru a vedea hărțile.	Wähle einen Spielordner, um seine Karten anzuzeigen.
+studio_maps_no_match	No maps match this search.	Κανένας χάρτης δεν ταιριάζει.	Ningún mapa coincide con la búsqueda.	Nenhum mapa corresponde à busca.	Asnjë hartë nuk përputhet.	Nicio hartă nu se potrivește.	Keine Karte passt zur Suche.
+studio_col_map	Map	Χάρτης	Mapa	Mapa	Harta	Hartă	Karte
+studio_col_variant	Variant	Έκδοση	Variante	Variante	Varianti	Variantă	Variante
+studio_col_size	Size	Μέγεθος	Tamaño	Tamanho	Madhësia	Dimensiune	Größe
+studio_pause	Pause	Παύση	Pausar	Pausar	Pauzë	Pauză	Pause
+studio_resume	Resume	Συνέχεια	Reanudar	Retomar	Vazhdo	Reia	Fortsetzen
+studio_paused	PAUSED	ΣΕ ΠΑΥΣΗ	EN PAUSA	PAUSADO	NË PAUZË	ÎN PAUZĂ	PAUSIERT
+studio_paused_log	Extraction paused. Press Resume to continue.	Η εξαγωγή σταμάτησε προσωρινά. Πάτα Συνέχεια.	Extracción en pausa. Pulsa Reanudar para continuar.	Extração pausada. Clique em Retomar para continuar.	Ekstraktimi u ndal. Shtyp Vazhdo për të vazhduar.	Extragerea este în pauză. Apasă Reia pentru a continua.	Extraktion pausiert. Drücke Fortsetzen, um weiterzumachen.
+studio_resumed_log	Extraction resumed.	Η εξαγωγή συνεχίζεται.	Extracción reanudada.	Extração retomada.	Ekstraktimi vazhdon.	Extragerea a fost reluată.	Extraktion fortgesetzt.
+studio_pause_error	Could not pause or resume the extraction.	Δεν ήταν δυνατή η παύση ή συνέχεια.	No se pudo pausar ni reanudar la extracción.	Não foi possível pausar ou retomar a extração.	Ekstraktimi nuk mund të ndalej ose vazhdonte.	Extragerea nu a putut fi oprită sau reluată.	Die Extraktion konnte nicht pausiert oder fortgesetzt werden.
+studio_close_running	An extraction is running. Stop it and close? Its unfinished output will be removed.	Μια εξαγωγή εκτελείται. Διακοπή και κλείσιμο; Η ημιτελής έξοδος θα διαγραφεί.	Hay una extracción en curso. ¿Detenerla y cerrar? Se eliminará la salida sin terminar.	Uma extração está em andamento. Parar e fechar? A saída incompleta será removida.	Një ekstraktim po punon. Ta ndal dhe të mbyll? Rezultati i papërfunduar do të fshihet.	O extragere rulează. O oprești și închizi? Rezultatul neterminat va fi șters.	Eine Extraktion läuft. Abbrechen und schließen? Die unfertige Ausgabe wird entfernt.
+studio_cleaned	Removed unfinished output from an interrupted run:	Διαγράφηκε ημιτελής έξοδος από διακοπείσα εκτέλεση:	Se eliminó la salida sin terminar de una ejecución interrumpida:	Saída incompleta de uma execução interrompida removida:	U fshi rezultati i papërfunduar nga një ekzekutim i ndërprerë:	A fost ștearsă ieșirea neterminată a unei rulări întrerupte:	Unfertige Ausgabe eines abgebrochenen Laufs entfernt:

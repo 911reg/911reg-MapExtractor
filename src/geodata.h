@@ -6,4 +6,5 @@ namespace extractor {
 int generateGeodata(const std::filesystem::path& source,const std::filesystem::path& output,unsigned workers,bool classic=false,bool fixture=false);
 // Fixed triangle scene used by VERIFY-GEODATA. It does not read a map.
 int verifyGeodata();
+int generatePathnodes(const std::filesystem::path& input,const std::filesystem::path& output);
 }

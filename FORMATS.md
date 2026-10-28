@@ -42,7 +42,7 @@ from the map, without looking up engine/gameplay class packages.
 ## Geodata formats
 
 The generator writes L2J and L2OFF/PTS from the same collision result, one folder
-per format. `--geo both` (the default), `--geo l2j` or `--geo l2off` chooses which
+per format. `--geo l2j` (the default), `--geo both` or `--geo l2off` chooses which
 folders are written. The Geodata tile uses the same choice. Only the four cardinal
 directions are stored. East is bit 1 (+X),
 West is bit 2 (-X), South is bit 4 (+Y), North is bit 8 (-Y). A set bit is walkable.
@@ -50,15 +50,12 @@ All fields are little endian. L2J uses
 byte block tags 0/1/2, raw signed flat height and packed complex/multilayer
 height with low four NSWE bits. Multilayer counts are bytes, limited to 125.
 
-The walk height is the clipped surface plus an offset, then truncated toward zero
-onto a multiple of 8. Offsets are terrain +26.296875, static mesh +26.5, model
-+26.875, and +29.375 for the top model span. Headroom is 46. Spans closer than 3
-units merge. A stored rise of 24 or less is open. Steep terrain uses walk angle
+The walk height includes surface offsets, then truncates toward zero onto a multiple of 8. Default offsets are terrain +26, static mesh +26.5, model +26.875, and +29.375 for the top model span. Headroom is 46. Spans closer than 3
+units merge. Mesh rises use an unquantized surface-rise limit of 16.32; terrain applies its steep-slope check before granting movement. Steep terrain uses walk angle
 45.573 degrees and slope 0.3, with a 3.125 surface rise before that slope is
-considered. Column tops and PlayerStarts are seeds; unreached lower floors are
-removed. Empty cells are a closed layer at -16352, packed as 0x8040. A flat L2J
-block is type 0 and is fully walkable even though the NSWE bits are not stored.
-The code comments in `src/geodata.cpp` match these numbers.
+considered. Exposed column tops and floors reachable from them or a PlayerStart are retained; disconnected lower layers are removed. This does not prove that every retained roof is accessible, and isolated areas entered only by teleport need a suitable seed. Unknown cells are closed at -16352. A flat block is emitted only when all 64 cells have the same height and all directions open. Exact flat serialization preserves the canonical cell heights. Generation first compacts fully open single-floor blocks spanning at most 32 units, changing each height by at most 24. `--exact-heights` disables that generation-only approximation.
+
+Client surface offsets are the default; `--world-heights` exposes raw surfaces for diagnostics. Edge directions are validated against the neighbouring map's collision (same variant); missing neighbours are closed. Only boundary blocks are rasterized for neighbours and a bounded cache avoids retaining whole clients.
 
 L2OFF uses an 18-byte header: byte region X/Y, word 128, word 16, dword stored
 nonflat layer count, dword flat+complex block count, dword flat block count.
@@ -133,8 +130,7 @@ included in incomplete exit status 2; XML output remains available.
 ## Water geometry
 
 Only the two recognized WaterVolume classes are export sources. An explicit
-false bWaterVolume or deleted actor is excluded. A positive water flag on a
-generic PhysicsVolume is not sufficient to make it an export source.
+false bWaterVolume or deleted actor is excluded. A serialized positive water flag also enables an explicit custom/PhysicsVolume source with brush geometry; unknown inherited flags are not guessed.
 
 The brush Model is decoded through its bounded vectors/points/nodes/surfaces/
 vertex-pool prefix. Actual BSP collision faces are reconstructed. Location,
@@ -144,9 +140,7 @@ the runtime actor transform. No editor or rendering library is used.
 
 Flat top/bottom faces must yield the same boundary edges. Internal cap edges
 cancel; remaining degree-two loops form footprints, including concave shapes.
-Cap areas and side-wall coverage must agree with those footprints. Holes,
-slopes, incomplete walls, overlap and invalid loops are rejected. Separate
-non-nested components become separate named zones. Geometry tolerances are
+Cap areas and side-wall coverage must agree with those footprints. Holed footprints decompose along native cap faces. Slopes, incomplete walls, cap-area mismatches and invalid loops are rejected. Separate components become separate named zones. Geometry tolerances are
 0.01 world units; XY edge keys use 1/1024-unit resolution.
 
 Rounded footprints must remain simple, positively oriented polygons. Exported
@@ -154,9 +148,7 @@ minZ=ceil(source minimum), maxZ=floor(source maximum); an empty interval is
 rejected. Original transformed faces and source Z limits remain in raw TSV.
 
 Nearby ordinary PhysicsVolume/AirVolume brushes are inspected only for dry
-overrides. WaterVolume bounds potentially overlapping a higher/equal or unknown
-priority dry region are rejected conservatively. Dry regions are not exported.
-General subclass inheritance and dry-region subtraction remain unsupported.
+overrides. Higher-priority dry prisms are subtracted in XY and Z. Overlapping tied or unknown priorities remain explicit errors because their precedence is not established. Dry regions are not exported as water. General subclass inheritance remains unsupported.
 Legacy water ZoneInfo regions and water materials are intentionally excluded.
 
 Templates expose only XML-escaped geometry/name fields and structural content.
@@ -183,3 +175,19 @@ The supplied 22_22 Mover6 RangeDeltas are checked to their six-decimal published
 precision. Native float values can differ below the last supplied decimal.
 The L2JServer and Mobius outputs passed their supplied XSDs. All four layouts
 were independently read back to verify their integer XY nodes against raw facts.
+
+## Pathnodes
+
+The legacy `.pn` writer follows the supplied PathnodeGenerator data layout: 256 rows (Y), each containing 256 columns (X); each entry has a one-byte node count. A node contains a signed big-endian 16-bit height and eight one-byte links in N, NE, E, SE, S, SW, W, NW order. Link zero means no route, otherwise the value is the target node layer index plus one. Layers are ordered by descending height at cell (blockX*8+3, blockY*8+3). Empty collision cells have zero nodes, rather than routes across unknown space.
+
+Links follow NSWE cell transitions; diagonals require both orthogonal passages to agree on the target layer. Region borders require neighbouring data. The writer is independently implemented; reference application code and rendering libraries are not included.
+
+Water geometry is shared between XML export and geodata movement checks. Vertical-prism holes are decomposed along native cap faces; higher-priority dry prisms are subtracted in XY and Z. Sloped volumes, unknown or tied overlapping priorities and legacy ZoneInfo remain explicit failures instead of bounding-box approximations. Geodata uses water to classify submerged floors; water surfaces are not fabricated as solid floors. Server swimming still requires the matching water-zone definitions.
+
+G3DEditor is a read-only format reference: https://github.com/MobiusDevelopment/G3DEditor/tree/master/G3D-Editor. No GPL implementation or renderer was copied into this executable. Client reference dumps are local test inputs, not shipped assets.
+
+World bounds: horizontal world-BSP caps at exactly Z=-16384 or +16384 are excluded even when split, clipped or only partially covering the region. Terrain and mesh surfaces are not excluded by this rule. Vertical BSP/blocking walls whose top is outside the encodable height range remain solid collision spans but do not create an out-of-range walkable top. No height is clamped to conceal an invalid surface.
+
+Bellion matching-client calibration: a 256-sample texture with serialized full 256-quad sector coverage needs a clamped extra vertex row/column; bitmap indices retain the texture-width stride. Terrain centre samples take precedence over off-centre triangle fragments. Downward-facing surfaces supply collision/ceilings, not walkable floors. Consistently wound watertight mesh collision contributes solid interior spans; open meshes are not filled. The matching client dump writes direction bits least-significant first; test import normalizes that text convention before comparing L2J masks. Exact client parity remains pending; cell/layer differences are recorded under `_tests`.
+
+Collision triangles are two-sided. Movement chooses the lowest neighbouring span with shared headroom, uses unquantized surface rise (16.32 units onto gentle surfaces; 3.125 onto steep surfaces), and checks directional steep-terrain slope. Reachability retains exposed column tops and PlayerStart-connected lower floors. These rules apply to every mesh and map; there are no asset exclusions.
