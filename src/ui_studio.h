@@ -1,6 +1,6 @@
 #pragma once
 
-HWND minimizeButton,closeButton,statsCanvas,spinnerCanvas,labCanvas;
+HWND minimizeButton,closeButton,statsCanvas,spinnerCanvas,labCanvas,countersCanvas;
 SIZE fixedWindowSize{1420,900};
 HWND configurationHeading,clearLogButton,saveLogButton,copyLogButton,activityCanvas,brandIcon,versionTag;
 HFONT headingFont,asciiFont,smallAsciiFont,labelFont,smallFont,buttonFont,percentFont,monoSmallFont;
@@ -12,6 +12,8 @@ int hotRow=-1;
 bool capabilityFits=true;
 ULONGLONG startedAt=0,finishedAt=0;
 size_t completedMaps=0,totalMaps=0;
+#include "run_diagnostics.h"
+RunCounters runCounters;
 // CPU threads that fit in free memory; the extractor runs below normal priority so the desktop stays responsive.
 unsigned workerCount=extractor::defaultWorkers();
 std::wstring currentMap;
@@ -47,7 +49,7 @@ struct Buffered {
     Buffered(HDC destination,RECT area) : target(destination),dc(CreateCompatibleDC(destination)),bounds(area) {
         bitmap=CreateCompatibleBitmap(destination,std::max(1L,area.right),std::max(1L,area.bottom)); previous=SelectObject(dc,bitmap);
     }
-    ~Buffered() { BitBlt(target,0,0,bounds.right,bounds.bottom,dc,0,0,SRCCOPY); SelectObject(dc,previous); DeleteObject(bitmap); DeleteDC(dc); }
+    ~Buffered() { BitBlt(target,bounds.left,bounds.top,bounds.right-bounds.left,bounds.bottom-bounds.top,dc,bounds.left,bounds.top,SRCCOPY); SelectObject(dc,previous); DeleteObject(bitmap); DeleteDC(dc); }
 };
 
 void consoleAppend(const std::wstring& value,COLORREF color) {
@@ -66,7 +68,7 @@ void consoleLine(const std::wstring& tag,COLORREF tagColor,const std::wstring& m
     SYSTEMTIME now{}; GetLocalTime(&now); wchar_t stamp[24]{};
     swprintf_s(stamp,L"[%02u:%02u:%02u] ",now.wHour,now.wMinute,now.wSecond);
     consoleAppend(stamp,theme::faint);
-    consoleAppend(L"["+tag+std::wstring(tag.size()<5 ? 5-tag.size() : 0,L' ')+L"]  ",tagColor);
+    consoleAppend(L"["+tag+L"] ",tagColor);
     consoleAppend(message+L"\r\n",color);
 }
 
@@ -90,6 +92,76 @@ void pill(HDC dc,RECT r,COLORREF color,const std::wstring& label,HFONT face,bool
     if (dot) { fillCircle(dc,float(caption.left)+dpf(3),float(r.top+r.bottom)/2,dpf(3.2f),color); caption.left+=dp(12); }
     studioText(dc,label,caption,mix(color,theme::text,0.35f),face,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|(dot ? 0u : DT_CENTER));
 }
+std::array<std::tuple<const char*,size_t,COLORREF>,3> counterFacts() {
+    return {{{"studio_errors",runCounters.errors,theme::red},{"studio_warnings",runCounters.warnings,theme::amber},{"studio_skipped",runCounters.skipped,theme::violet}}};
+}
+int countersWidth(HDC dc) {
+    int width=dp(12);
+    for(const auto& [key,count,color]:counterFacts())width+=textWidth(dc,i18n::tr(key)+L" "+std::to_wstring(count),smallFont)+dp(24);
+    return width;
+}
+#include "ui_diagnostics.h"
+
+LRESULT CALLBACK countersProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
+    const auto hit=[&](POINT point) {
+        const auto facts=counterFacts();
+        for(int i=0;i<3;++i)if(std::get<1>(facts[size_t(i)]) && PtInRect(&counterBoxes[size_t(i)],point))return i;
+        return -1;
+    };
+    const POINT point{short(LOWORD(lParam)),short(HIWORD(lParam))};
+    if(message==WM_MOUSEMOVE) {
+        const int hovered=hit(point);
+        if(hovered!=counterHot){counterHot=hovered;InvalidateRect(window,nullptr,FALSE);}
+        TRACKMOUSEEVENT event{sizeof(event),TME_LEAVE,window,0};TrackMouseEvent(&event);return 0;
+    }
+    if(message==WM_MOUSELEAVE){counterHot=-1;InvalidateRect(window,nullptr,FALSE);return 0;}
+    if(message==WM_SETCURSOR){POINT cursor{};GetCursorPos(&cursor);ScreenToClient(window,&cursor);SetCursor(LoadCursorW(nullptr,hit(cursor)>=0?IDC_HAND:IDC_ARROW));return TRUE;}
+    if(message==WM_LBUTTONDOWN){counterPressed=hit(point);if(counterPressed>=0){counterFocus=counterPressed;SetFocus(window);SetCapture(window);}return 0;}
+    if(message==WM_LBUTTONUP){const int pressed=counterPressed;counterPressed=-1;if(GetCapture()==window)ReleaseCapture();if(pressed>=0 && pressed==hit(point))openDetails(GetParent(window),size_t(pressed));return 0;}
+    if(message==WM_CAPTURECHANGED){counterPressed=-1;return 0;}
+    if(message==WM_GETDLGCODE) {
+        const auto key=reinterpret_cast<MSG*>(lParam);
+        return DLGC_WANTARROWS|(key && key->message==WM_KEYDOWN && (key->wParam==VK_RETURN || key->wParam==VK_SPACE)?DLGC_WANTMESSAGE:0);
+    }
+    if(message==WM_SETFOCUS || message==WM_KILLFOCUS) {
+        if(counterFocus<0 || !std::get<1>(counterFacts()[size_t(counterFocus)])) {
+            counterFocus=-1;
+            for(int i=0;i<3;++i)if(std::get<1>(counterFacts()[size_t(i)])){counterFocus=i;break;}
+        }
+        InvalidateRect(window,nullptr,FALSE);return 0;
+    }
+    if(message==WM_KEYDOWN) {
+        if(wParam==VK_LEFT || wParam==VK_RIGHT)for(int step=1;step<=3;++step){const int next=(std::max(0,counterFocus)+(wParam==VK_LEFT?-step:step)+3)%3;if(std::get<1>(counterFacts()[size_t(next)])){counterFocus=next;InvalidateRect(window,nullptr,FALSE);break;}}
+        else if((wParam==VK_RETURN || wParam==VK_SPACE) && counterFocus>=0)openDetails(GetParent(window),size_t(counterFocus));
+        return 0;
+    }
+    if(message==WM_ERASEBKGND)return 1;
+    if(message==WM_PAINT || message==WM_PRINTCLIENT) {
+        PAINTSTRUCT paint{};const auto target=message==WM_PAINT?BeginPaint(window,&paint):reinterpret_cast<HDC>(wParam);
+        RECT r{};GetClientRect(window,&r);
+        {
+            Buffered buffer(target,r);const auto dc=buffer.dc;FillRect(dc,&r,panel);
+            int x=0,index=0;
+            const bool compact=countersWidth(dc)>r.right;
+            for(const auto& [key,count,color]:counterFacts()) {
+                const auto label=i18n::tr(key),value=std::to_wstring(count);
+                const int valueWidth=textWidth(dc,value,smallFont),width=compact?(int(r.right)-dp(12))/3:textWidth(dc,label+L" "+value,smallFont)+dp(24);
+                const RECT chip{x,dp(2),x+width,r.bottom-dp(2)};
+                counterBoxes[size_t(index)]=chip;
+                const bool hot=count && counterHot==index,focused=count && GetFocus()==window && counterFocus==index;
+                roundRect(dc,chip,dpf(5),count?mix(color,theme::inset,hot?0.82f:0.91f):theme::inset,focused||hot?color:count?mix(color,theme::inset,0.65f):theme::line);
+                ++index;
+                fillCircle(dc,float(x+dp(7)),float(r.bottom)/2,dpf(2.5f),count?color:theme::faint);
+                studioText(dc,label,{x+dp(14),chip.top,chip.right-dp(10)-valueWidth,chip.bottom},count?color:theme::muted,smallFont);
+                studioText(dc,value,{chip.right-dp(7)-valueWidth,chip.top,chip.right-dp(7),chip.bottom},count?color:theme::muted,smallFont,DT_RIGHT|DT_SINGLELINE|DT_VCENTER);
+                x+=width+dp(6);
+            }
+        }
+        if(message==WM_PAINT)EndPaint(window,&paint);return 0;
+    }
+    return DefWindowProcW(window,message,wParam,lParam);
+}
+
 // Pause and resume suspend the extractor process for this session only; nothing is saved.
 bool paused=false;
 ULONGLONG pausedAt=0,pausedTotal=0;
@@ -132,7 +204,20 @@ LRESULT CALLBACK statsProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam)
                 const int lineTop=twoLine?y+(row-dp(38))/2:y,lineHeight=twoLine?dp(18):row;
                 icon(dc,glyph,{dp(14),lineTop+(lineHeight-dp(14))/2,dp(28),lineTop+(lineHeight+dp(14))/2},theme::muted,1.8f);
                 studioText(dc,label,{dp(36),lineTop,r.right-dp(14),lineTop+lineHeight},theme::muted,smallFont);
-                if(twoLine)studioText(dc,value,{dp(36),lineTop+dp(18),r.right-dp(14),lineTop+dp(38)},color,logFont);
+                if(twoLine) {
+                    RECT valueRect{dp(36),lineTop+dp(18),r.right-dp(14),lineTop+dp(38)};
+                    if(i==0) {
+                        wchar_t rate[40]{};
+                        if(completedMaps && elapsed)swprintf_s(rate,L"%.1f",double(completedMaps)*60000.0/double(elapsed));
+                        const auto speed=std::wstring(rate[0]?rate:L"—")+i18n::tr("studio_rate_unit");
+                        const int width=textWidth(dc,speed,monoSmallFont)+dp(22),left=valueRect.right-width;
+                        if(left>valueRect.left+textWidth(dc,value,logFont)+dp(6)) {
+                            pill(dc,{left,valueRect.top-dp(2),valueRect.right,valueRect.bottom},completedMaps?theme::cyan:theme::faint,speed,monoSmallFont,false);
+                            valueRect.right=left-dp(6);
+                        }
+                    }
+                    studioText(dc,value,valueRect,color,logFont);
+                }
                 else studioText(dc,value,{r.right/2,y,r.right-dp(14),y+row},color,logFont,DT_RIGHT|DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS);
             }
         }
@@ -345,8 +430,9 @@ LRESULT CALLBACK activityProc(HWND window,UINT message,WPARAM wParam,LPARAM lPar
 }
 
 LRESULT CALLBACK hoverProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam,UINT_PTR,DWORD_PTR) {
-    if(message==WM_MOUSEMOVE) {TRACKMOUSEEVENT event{sizeof(event),TME_LEAVE,window,0};TrackMouseEvent(&event);InvalidateRect(window,nullptr,FALSE);}
-    if(message==WM_MOUSELEAVE)InvalidateRect(window,nullptr,FALSE);
+    if(message==WM_ERASEBKGND)return 1;
+    if(message==WM_MOUSEMOVE && !GetPropW(window,L"hover")) {SetPropW(window,L"hover",HANDLE(1));TRACKMOUSEEVENT event{sizeof(event),TME_LEAVE,window,0};TrackMouseEvent(&event);InvalidateRect(window,nullptr,FALSE);}
+    if(message==WM_MOUSELEAVE) {RemovePropW(window,L"hover");InvalidateRect(window,nullptr,FALSE);}
     return DefSubclassProc(window,message,wParam,lParam);
 }
 void invalidateRow(HWND list,int row) {
@@ -553,8 +639,14 @@ void studioLayout(HWND window) {
     place(statsCanvas,statsLeft,consoleCard.top+dp(14),statsWidth,consoleCard.bottom-consoleCard.top-dp(28));place(progressBar,dp(14),dp(44),statsWidth-dp(28),dp(8));
     const int toolTop=consoleCard.top+dp(12),toolHeight=dp(30);int toolRight=terminalRight;
     for(const auto& [button,width]:std::array<std::pair<HWND,int>,3>{{{clearLogButton,dp(84)},{saveLogButton,dp(104)},{copyLogButton,dp(84)}}}){toolRight-=width;place(button,toolRight,toolTop,width,toolHeight);toolRight-=dp(8);}
-    consoleTitle={consoleCard.left+dp(20),consoleCard.top+dp(14),toolRight,consoleCard.top+dp(40)};place(activityLabel,consoleTitle.left,consoleTitle.top,dp(10),dp(10));
-    terminalFrame={consoleCard.left+dp(16),consoleCard.top+dp(52),terminalRight,consoleCard.bottom-dp(44)};
+    const auto consoleDC=GetDC(window);
+    const int titleWidth=textWidth(consoleDC,L"3.  "+upper(text(activityLabel)),headingFont)+dp(30),counterWidth=countersWidth(consoleDC);
+    ReleaseDC(window,consoleDC);
+    consoleTitle={consoleCard.left+dp(20),consoleCard.top+dp(14),std::min<LONG>(toolRight,consoleCard.left+dp(20)+titleWidth),consoleCard.top+dp(40)};place(activityLabel,consoleTitle.left,consoleTitle.top,dp(10),dp(10));
+    const bool counterRow=toolRight-consoleTitle.right-dp(14)<counterWidth;
+    const int counterLeft=counterRow?consoleCard.left+dp(16):consoleTitle.right+dp(14);
+    place(countersCanvas,counterLeft,consoleCard.top+dp(counterRow?46:12),(counterRow?terminalRight:toolRight)-counterLeft,dp(30));
+    terminalFrame={consoleCard.left+dp(16),consoleCard.top+dp(counterRow?84:52),terminalRight,consoleCard.bottom-dp(44)};
     place(logView,terminalFrame.left+dp(12),terminalFrame.top+dp(8),terminalFrame.right-terminalFrame.left-dp(16),terminalFrame.bottom-terminalFrame.top-dp(14));
     place(status,consoleCard.left+dp(44),consoleCard.bottom-dp(36),terminalRight-consoleCard.left-dp(44),dp(24));
     place(activityCanvas,activityCard.left+dp(6),activityCard.top+dp(6),activityCard.right-activityCard.left-dp(12),activityCard.bottom-activityCard.top-dp(12));
@@ -690,15 +782,27 @@ void verifyStudioWindow(HWND window) {
     consoleAppend(L"Studio self-check\r\nSecond line\r\n",theme::accent);need(text(logView).find(L"Studio self-check")!=std::wstring::npos,"Console append failed");need(SendMessageW(logView,EM_GETLINECOUNT,0,0)>=3,"Console lost paragraph breaks");
     for(int i=0;i<50;++i)consoleAppend(L"Console scrolling check\r",theme::muted);
     need(SendMessageW(logView,EM_GETFIRSTVISIBLELINE,0,0)>0,"Console failed to follow appended lines");
+    verifyDetailsWindow(window);
     SendMessageW(window,WM_COMMAND,130,0);need(text(logView).empty(),"Console clear failed");
+    runCounters.consume("ERROR: demo output failure",3);
+    runCounters.consume("WARNING: demo missing package",3);
+    runCounters.consume("WARNING: demo missing package",3);
+    runCounters.consume("SKIPPED: 18_13.unr / StaticMeshActor1: demo",3);
+    runCounters.consume("SKIPPED: 18_13.unr: demo",3);
+    need(runCounters.errors==1 && runCounters.warnings==1 && runCounters.skipped==1,"Run counters are incorrect");
+    SendMessageW(window,WM_COMMAND,130,0);
+    need(runCounters.errors==1 && runCounters.warnings==1 && runCounters.skipped==1,"Clearing console reset run counters");
+    runCounters.errors=2;runCounters.warnings=128;runCounters.skipped=3;
+    startedAt=GetTickCount64()-205000;finishedAt=GetTickCount64();hasRun=true;completedMaps=70;totalMaps=232;currentMap=L"18_10.unr";
+    SendMessageW(progressBar,PBM_SETPOS,30,0);
     consoleLine(L"INFO",theme::blue,i18n::tr("studio_console_ready"),theme::body);
     consoleLine(L"SCAN",theme::accent,L"MAP 22_22.unr | demo",theme::body);
     consoleLine(L"OK",theme::green,L"RESULT doors 128 0 0 0 0",RGB(167,243,208));
-    need(text(logView).find(L"[OK   ]  RESULT")!=std::wstring::npos,"Console tag alignment changed");
+    need(text(logView).find(L"[OK] RESULT")!=std::wstring::npos,"Console tag spacing changed");
     for(const auto& [name,size]:std::array<std::pair<const wchar_t*,SIZE>,4>{{{L"default",{1420,940}},{L"narrow",{1100,800}},{L"wide",{1660,1000}},{L"short",{1366,704}}}}) {
         SetWindowPos(window,nullptr,-32000,-32000,size.cx,size.cy,SWP_NOZORDER|SWP_NOACTIVATE);studioLayout(window);UpdateWindow(window);
         RECT client{};GetClientRect(window,&client);
-        for(const auto child:{input,output,startButton,openButton,clearOutputButton,mapList,logView,activityCanvas,serverSelector,languageSelector,clearLogButton,saveLogButton,copyLogButton,statsCanvas}) {
+        for(const auto child:{input,output,startButton,openButton,clearOutputButton,mapList,logView,activityCanvas,serverSelector,languageSelector,clearLogButton,saveLogButton,copyLogButton,statsCanvas,countersCanvas}) {
             RECT bounds{};GetWindowRect(child,&bounds);MapWindowPoints(nullptr,window,reinterpret_cast<POINT*>(&bounds),2);
             need(bounds.left>=0 && bounds.top>=0 && bounds.right<=client.right && bounds.bottom<=client.bottom,"Control escaped resized window");
         }
@@ -706,7 +810,20 @@ void verifyStudioWindow(HWND window) {
         need(open.top>=start.bottom,"Configuration controls overlap");
         previewPath=studioProof/(std::wstring(name)+L".bmp");renderPreview(window);
     }
-    SetWindowPos(window,nullptr,-32000,-32000,1420,940,SWP_NOZORDER|SWP_NOACTIVATE);studioLayout(window);
+    SetWindowPos(window,nullptr,-32000,-32000,1420,900,SWP_NOZORDER|SWP_NOACTIVATE);studioLayout(window);
+    runCounters.errors=999;runCounters.warnings=12345;runCounters.skipped=232;
+    InvalidateRect(countersCanvas,nullptr,FALSE);
+    previewPath=studioProof/L"large-counts.bmp";renderPreview(window);
+    const auto originalLanguage=i18n::selected();
+    for(size_t language=0;language<i18n::languages().size();++language) {
+        i18n::select(language);updateLanguage();studioLayout(window);
+        RECT counters{},copy{};GetWindowRect(countersCanvas,&counters);GetWindowRect(copyLogButton,&copy);
+        RECT overlap{};need(!IntersectRect(&overlap,&counters,&copy),"Translated counters overlap console tools");
+        previewPath=studioProof/(L"language-"+std::to_wstring(language)+L".bmp");renderPreview(window);
+    }
+    i18n::select(originalLanguage);updateLanguage();studioLayout(window);
+    runCounters={};startedAt=0;finishedAt=0;hasRun=false;completedMaps=0;totalMaps=0;currentMap.clear();
+    previewPath=studioProof/L"idle.bmp";renderPreview(window);
     for(int i=0;i<16;++i){donutAngle=0.6f+float(i)*0.12f;previewPath=studioProof/(L"spin-"+std::to_wstring(i)+L".bmp");renderPreview(window);}
     LOGFONTW face{};GetObjectW(headingFont,sizeof(face),&face);need(std::wstring(face.lfFaceName)==displayFace,"Heading font changed unexpectedly");
     previewPath.clear();verificationResult=0;DestroyWindow(window);

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <set>
 #include <cstdio>
 #include "localization.h"
 #include "history.h"
@@ -120,8 +121,8 @@ struct Progress { int low=0,high=100,position=0; };
 LRESULT CALLBACK progressProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
     auto data=reinterpret_cast<Progress*>(GetWindowLongPtrW(window,GWLP_USERDATA));
     if (message==WM_CREATE) { SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(new Progress)); return 0; }
-    if (message==PBM_SETRANGE32) { data->low=int(wParam); data->high=int(lParam); InvalidateRect(window,nullptr,TRUE); return 0; }
-    if (message==PBM_SETPOS) { data->position=int(wParam); InvalidateRect(window,nullptr,TRUE); return 0; }
+    if (message==PBM_SETRANGE32) { if(data->low!=int(wParam) || data->high!=int(lParam)) { data->low=int(wParam); data->high=int(lParam); InvalidateRect(window,nullptr,FALSE); } return 0; }
+    if (message==PBM_SETPOS) { if(data->position!=int(wParam)) { data->position=int(wParam); InvalidateRect(window,nullptr,FALSE); } return 0; }
     if (message==PBM_SETBARCOLOR || message==PBM_SETBKCOLOR || message==WM_ERASEBKGND) return 1;
     if (message==WM_PAINT || message==WM_PRINTCLIENT) {
         PAINTSTRUCT paint{}; const auto dc=message==WM_PAINT ? BeginPaint(window,&paint) : reinterpret_cast<HDC>(wParam);
@@ -264,6 +265,8 @@ std::string selectedServer="l2jserver",geoFormat="l2j";
 std::vector<std::string> visibleServers;
 std::filesystem::path preferencesPath,selectionPath;
 void renderPreview(HWND window);
+void updateLanguage();
+std::wstring wide(const std::string& value);
 #include "ui_studio.h"
 void savePreferences() {
     if (verifying) return;
@@ -424,6 +427,7 @@ void updateLanguage() {
         updateMapCount();
     }
     setText(status,"ready");
+    refreshDetails(true);
     if (const auto parent=GetParent(status)) InvalidateRect(parent,nullptr,TRUE);
 }
 
@@ -436,22 +440,25 @@ std::wstring wide(const std::string& value) {
 std::pair<std::wstring,std::wstring> completionText(DWORD code) {
     size_t exported=0,skipped=0,maps=0,extra=0,duplicates=0;
     std::string kind; bool found=false,duplicateBlock=false;
-    std::wstring reasons,duplicateText;
+    std::wstring reasons,duplicateText,warnings;
+    std::set<std::string> seenWarnings;
     std::istringstream lines(scanLog); std::string line;
     while (std::getline(lines,line)) {
         if (line.starts_with("RESULT ")) {
             std::istringstream values(line.substr(7)); values>>kind>>exported>>skipped>>maps>>extra>>duplicates; found=bool(values); duplicateBlock=false;
         } else if (line.starts_with("SKIPPED: ")) reasons+=wide(line.substr(9))+L"\r\n\r\n";
         else if (line.starts_with("ERROR: ")) reasons+=wide(line.substr(7))+L"\r\n\r\n";
+        else if (line.starts_with("WARNING: ") && seenWarnings.insert(line).second) warnings+=wide(line.substr(9))+L"\r\n\r\n";
         else if (line.starts_with("Duplicate door IDs mean")) { duplicateBlock=true; duplicateText+=wide(line)+L"\r\n"; }
         else if (duplicateBlock) duplicateText+=wide(line)+L"\r\n";
     }
     const auto key=kind=="doors" ? "result_doors" : kind=="water" ? "result_water" : kind=="geodata" ? "result_geodata" : kind=="pathnodes" ? "result_pathnodes" : "result_scan";
-    const auto title=found ? i18n::format(key,exported,skipped+maps+extra+(kind=="doors" ? duplicates : 0)) : i18n::tr(code ? "failed" : "done");
+    const auto title=found ? i18n::format(key,exported,skipped+maps+extra) : i18n::tr(code ? "failed" : "done");
     auto details=title+L"\r\n\r\n";
     if (!reasons.empty()) details+=i18n::tr("skipped_reasons")+L"\r\n\r\n"+reasons;
+    if (!warnings.empty()) details+=i18n::tr("result_warnings")+L"\r\n\r\n"+warnings;
     if (!duplicateText.empty()) details+=duplicateText;
-    if (reasons.empty() && duplicateText.empty() && code==0) details+=i18n::tr("result_ready");
+    if (reasons.empty() && warnings.empty() && duplicateText.empty() && code==0) details+=i18n::tr("result_ready");
     return {title,details};
 }
 
@@ -468,7 +475,8 @@ void readProgress() {
         auto line = scanLog.substr(displayedLog,end-displayedLog); displayedLog = end+1;
         if(!line.empty() && line.back()=='\r')line.pop_back();
         struct Severity { const wchar_t* tag; COLORREF tint,text; };
-        const auto severity=line.starts_with("SKIPPED:") ? Severity{L"WARN",theme::amber,RGB(253,224,150)}
+        const auto severity=line.starts_with("SKIPPED:") ? Severity{L"SKIP",theme::violet,RGB(221,190,255)}
+            : line.starts_with("WARNING:") ? Severity{L"WARN",theme::amber,RGB(253,224,150)}
             : line.starts_with("ERROR") ? Severity{L"FAIL",theme::red,RGB(254,190,190)}
             : line.starts_with("MAP ") ? Severity{L"SCAN",theme::accent,theme::text}
             : line.starts_with("RESULT ") ? Severity{L"OK",theme::green,RGB(167,243,208)}
@@ -476,6 +484,7 @@ void readProgress() {
             : line.starts_with("Checked ") ? Severity{L"PROG",theme::cyan,theme::body}
             : Severity{L"INFO",theme::blue,theme::body};
         consoleLine(severity.tag,severity.tint,wide(line),severity.text);
+        if(runCounters.consume(line,taskMode))InvalidateRect(countersCanvas,nullptr,FALSE);
         if(line.starts_with("MAP "))activityStage=1;
         if(line.starts_with("STAGE "))activityStage=line.find("serialize")!=std::string::npos || line.find("pathnodes")!=std::string::npos?3:2;
         if(line.starts_with("RESULT "))activityStage=4;
@@ -639,7 +648,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SendMessageW(logView,EM_SETBKGNDCOLOR,0,theme::inset);SetWindowTheme(logView,L"DarkMode_Explorer",nullptr);
         { CHARFORMAT2W style{}; style.cbSize=sizeof(style); style.dwMask=CFM_COLOR; style.crTextColor=theme::body; SendMessageW(logView,EM_SETCHARFORMAT,SCF_ALL,reinterpret_cast<LPARAM>(&style)); }
         configurationHeading=control(window,L"STATIC",L"",0,0,0,1,1);
-        versionTag=control(window,L"STATIC",L"v0.8.0",0,0,0,1,1);
+        versionTag=control(window,L"STATIC",L"v0.9.0",0,0,0,1,1);
         // Section titles, the map count and the version are painted by paintWindow; the statics keep their text.
         for (const auto hidden:{configurationHeading,mapLabel,activityLabel,mapCount,versionTag}) ShowWindow(hidden,SW_HIDE);
         for (const auto label:{clientLabel,outputLabel,taskLabel,serverLabel}) SendMessageW(label,WM_SETFONT,reinterpret_cast<WPARAM>(labelFont),TRUE);
@@ -650,12 +659,13 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         minimizeButton=control(window,L"BUTTON",L"—",BS_OWNERDRAW|WS_TABSTOP,0,0,1,1,133);
         closeButton=control(window,L"BUTTON",L"×",BS_OWNERDRAW|WS_TABSTOP,0,0,1,1,134);
         statsCanvas=control(window,L"911regStats",L"",WS_CLIPCHILDREN,0,0,1,1,135);
+        countersCanvas=control(window,L"911regCounters",L"",WS_TABSTOP,0,0,1,1,137);
         SetParent(progressBar,statsCanvas);
         activityCanvas=control(window,L"911regActivity",L"",0,0,0,1,1,132);
         spinnerCanvas=control(window,L"911regSpinner",L"",0,0,0,1,1,137);
         labCanvas=control(window,L"911regLab",L"",0,0,0,1,1,138);
         BOOL animation=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animation,0);animateDonut=animation!=FALSE;
-        SetTimer(window,2,40,nullptr);
+        SetTimer(window,2,30,nullptr);
         std::vector<wchar_t> executable(32768);
         if (GetModuleFileNameW(nullptr,executable.data(),32768)) {
             const auto folder = std::filesystem::path(executable.data()).parent_path() / L"Output";
@@ -677,6 +687,8 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         RECT tipMargin{14,10,14,10}; SendMessageW(tips,TTM_SETMARGIN,0,reinterpret_cast<LPARAM>(&tipMargin));
         for (const auto& entry:std::vector<std::pair<HWND,const char*>>{{minimizeButton,"studio_minimize"},{closeButton,"studio_close"},{input,"tip_client"},{inputButton,"tip_client"},{output,"tip_output"},{outputButton,"tip_output"},{mapList,"tip_list"},{mapFilter,"tip_search"},{serverSelector,"tip_server"},{preferClassicButton,"tip_prefer_classic"},{preferNormalButton,"tip_prefer_normal"},{combineButton,"tip_combine"},{languageSelector,"tip_language"},{startButton,"tip_start"},{openButton,"tip_results"},{clearOutputButton,"tip_clear"},{logView,"tip_log"},{progressBar,"tip_log"},{taskTiles[0],"tip_doors"},{taskTiles[1],"tip_water"},{taskTiles[3],"tip_geodata"},{taskTiles[4],"tip_pathnodes"}}) addTip(window,entry.first,entry.second);
         if (const auto choice=reinterpret_cast<Choice*>(GetWindowLongPtrW(input,GWLP_USERDATA)); choice && choice->edit) addTip(window,choice->edit,"tip_client");
+        addTip(window,countersCanvas,"studio_counters_tip");
+        addTip(window,statsCanvas,"studio_rate_tip");
         const auto recent = clientHistory->load();
         refreshClients(recent.empty() ? L"" : recent.front());
 
@@ -818,7 +830,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             ShowWindow(combineButton,taskMode==4 ? SW_HIDE : SW_SHOW); tipKeys[combineButton]=taskMode==3 ? "tip_pathnodes" : "tip_combine";
             if (serverLabel) setText(serverLabel,taskMode==4 ? "node_format" : taskMode==3 ? "geo_format" : "server_type");
             populateServers(); EnableWindow(serverSelector,taskMode!=4);
-            ShowWindow(capability,capabilityFits ? SW_SHOW : SW_HIDE); InvalidateRect(window,nullptr,TRUE);
+            ShowWindow(capability,capabilityFits ? SW_SHOW : SW_HIDE); InvalidateRect(window,&configurationCard,FALSE);
             setText(capability,taskMode==4 ? "pn_hint" : "variants_hint");
             EnableWindow(startButton,sourceReady() && !text(output).empty());
             return 0;
@@ -923,6 +935,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (recoveredRun) consoleLine(L"CLEAN",theme::cyan,i18n::tr("studio_cleaned")+L" "+manifest,theme::body);
             if (debugResults) jobLog.open(runFolder/L"911reg.log",std::ios::binary); SendMessageW(progressBar,PBM_SETRANGE32,0,100); SendMessageW(progressBar,PBM_SETPOS,0,0);
             CloseHandle(child.hThread); process = child.hProcess; lockMapSelection=false;
+            runCounters={};refreshDetails(true);InvalidateRect(countersCanvas,nullptr,FALSE);
             activityStage=0;startedAt=GetTickCount64();finishedAt=0;hasRun=true;paused=false;pausedAt=0;pausedTotal=0;completedMaps=0;totalMaps=selectedMapMode?selectedMaps.size():singleMap?1:availableMaps.size();currentMap.clear();
             setText(startButton,"studio_pause"); EnableWindow(startButton,TRUE); InvalidateRect(startButton,nullptr,FALSE);
             EnableWindow(input,FALSE); EnableWindow(output,FALSE);
@@ -936,8 +949,25 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         return 0;
     case WM_TIMER:
-        if(wParam==2){if(animateDonut)donutAngle+=0.035f;InvalidateRect(activityCanvas,nullptr,FALSE);if(IsWindowVisible(spinnerCanvas))InvalidateRect(spinnerCanvas,nullptr,FALSE);InvalidateRect(labCanvas,nullptr,FALSE);if(process)InvalidateRect(statsCanvas,nullptr,FALSE);static ULONGLONG lastSecond=0;if(GetTickCount64()/1000!=lastSecond){lastSecond=GetTickCount64()/1000;InvalidateRect(statsCanvas,nullptr,FALSE);RECT r{};GetClientRect(window,&r);r.top=r.bottom-dp(36);InvalidateRect(window,&r,FALSE);}return 0;}
+        if(wParam==2){
+            static ULONGLONG lastFrame=0,lastSecond=0;
+            const auto now=GetTickCount64();
+            if(IsIconic(window) || !IsWindowVisible(window)) { lastFrame=now; return 0; }
+            const auto elapsed=lastFrame ? std::min<ULONGLONG>(now-lastFrame,100) : 0;
+            lastFrame=now;
+            if(animateDonut) {
+                donutAngle+=float(elapsed)*0.000875f;
+                InvalidateRect(activityCanvas,nullptr,FALSE);
+                if(IsWindowVisible(spinnerCanvas))InvalidateRect(spinnerCanvas,nullptr,FALSE);
+                if(IsWindowVisible(labCanvas))InvalidateRect(labCanvas,nullptr,FALSE);
+            }
+            if(now/1000!=lastSecond){lastSecond=now/1000;InvalidateRect(statsCanvas,nullptr,FALSE);RECT r{};GetClientRect(window,&r);r.top=r.bottom-dp(36);InvalidateRect(window,&r,FALSE);}
+            return 0;
+        }
         readProgress();
+        if(verifying && verificationSimple && process && runCounters.warnings && !detailsPanel.window) {
+            openDetails(window,1);previewPath=runFolder.parent_path()/L"live-warning-details.bmp";renderPreview(detailsPanel.window);previewPath.clear();
+        }
         if(verifying && verificationSimple && process && !runningProofCaptured && !scanLog.empty()) {
             runningProofCaptured=true;previewPath=runFolder.parent_path()/L"running-preview.bmp";renderPreview(window);previewPath.clear();
             // Pause and resume the live run once, and keep a picture of the paused window.
@@ -953,6 +983,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             extractor::markComplete(runFolder,taskMode);
             CloseHandle(process); process = nullptr; KillTimer(window,1);
             readProgress(); CloseHandle(scanPipe); scanPipe = nullptr;
+            runCounters.finish(code);InvalidateRect(countersCanvas,nullptr,FALSE);
             jobLog.close(); SendMessageW(progressBar,PBM_SETRANGE32,0,100); SendMessageW(progressBar,PBM_SETPOS,code==0 ? 100 : 0,0);
             EnableWindow(startButton,TRUE);
             EnableWindow(input,TRUE); EnableWindow(output,TRUE);
@@ -971,6 +1002,12 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (verifying) {
                 if (verificationSimple) {
                     previewPath=runFolder.parent_path()/L"completion-preview.bmp"; renderPreview(window); previewPath.clear();
+                    if(detailsPanel.window) {
+                        refreshDetails(true);
+                        if(detailsPanel.rows.empty())throw std::runtime_error("Live warning details disappeared at completion");
+                        previewPath=runFolder.parent_path()/L"warning-details.bmp";renderPreview(detailsPanel.window);previewPath.clear();
+                        DestroyWindow(detailsPanel.window);
+                    }
                     if (code==2 && text(logView).find(i18n::tr("skipped_reasons"))==std::wstring::npos) throw std::runtime_error("Skipped reasons are not visible in Activity");
                 }
                 verificationResult = (code == 0 || (verificationSimple && code==2)) && std::filesystem::exists(manifest) ? 0 : 1;
@@ -1030,6 +1067,8 @@ int showUi() {
     WNDCLASSW lab{};lab.lpfnWndProc=labProc;lab.hInstance=GetModuleHandleW(nullptr);lab.lpszClassName=L"911regLab";RegisterClassW(&lab);
     WNDCLASSW spinner{};spinner.lpfnWndProc=spinnerProc;spinner.hInstance=GetModuleHandleW(nullptr);spinner.lpszClassName=L"911regSpinner";RegisterClassW(&spinner);
     WNDCLASSW stats{};stats.lpfnWndProc=statsProc;stats.hInstance=GetModuleHandleW(nullptr);stats.lpszClassName=L"911regStats";RegisterClassW(&stats);
+    WNDCLASSW counters{};counters.lpfnWndProc=countersProc;counters.hInstance=GetModuleHandleW(nullptr);counters.lpszClassName=L"911regCounters";RegisterClassW(&counters);
+    WNDCLASSW diagnostics{};diagnostics.lpfnWndProc=detailsProc;diagnostics.hInstance=GetModuleHandleW(nullptr);diagnostics.lpszClassName=L"911regDiagnostics";diagnostics.hCursor=LoadCursorW(nullptr,IDC_ARROW);RegisterClassW(&diagnostics);
     WNDCLASSW progress{}; progress.lpfnWndProc=progressProc; progress.hInstance=GetModuleHandleW(nullptr); progress.lpszClassName=L"911regProgress"; RegisterClassW(&progress);
     WNDCLASSW cls{}; cls.lpfnWndProc = windowProc; cls.hInstance = GetModuleHandleW(nullptr);
     cls.lpszClassName = L"911regMapExtractor"; cls.hbrBackground = background;
@@ -1068,6 +1107,12 @@ int showUi() {
     } else ShowWindow(window,SW_SHOW);
     MSG message{};
     while (GetMessageW(&message,nullptr,0,0) > 0) {
+        if(detailsPanel.window && (message.hwnd==detailsPanel.window || IsChild(detailsPanel.window,message.hwnd))) {
+            if(message.message==WM_KEYDOWN && message.wParam==VK_ESCAPE){DestroyWindow(detailsPanel.window);continue;}
+            focusInput(detailsPanel.window,message);
+            if(IsDialogMessageW(detailsPanel.window,&message))continue;
+            TranslateMessage(&message);DispatchMessageW(&message);continue;
+        }
         focusInput(window,message);
         if(message.message==WM_KEYDOWN && message.wParam==VK_RETURN && (GetKeyState(VK_CONTROL)&0x8000) && !process){SendMessageW(window,WM_COMMAND,103,0);continue;}
         if (!IsDialogMessageW(window,&message)) { TranslateMessage(&message); DispatchMessageW(&message); }
@@ -1082,12 +1127,43 @@ int showUi() {
 
 int verifyCompletion() {
     i18n::load();
+    RunCounters counters;
+    counters.consume("WARNING: repeated mesh warning",3);counters.consume("WARNING: repeated mesh warning",3);
+    counters.consume("SKIPPED: 18_13.unr / StaticMeshActor1: invalid collision",3);
+    counters.consume("SKIPPED: 18_13.unr / StaticMeshActor2: invalid collision",3);
+    counters.consume("SKIPPED: 18_13.unr: incomplete collision",3);
+    if(counters.warnings!=1 || counters.skipped!=1)throw std::runtime_error("Live diagnostics overcount repeated warnings or failed maps");
+    if(counters.details[1].size()!=1 || counters.details[1][0].occurrences!=2 || counters.details[2].size()!=1 || counters.details[2][0].reason.find("StaticMeshActor2")==std::string::npos)throw std::runtime_error("Diagnostic reasons or occurrences lost");
+    counters.consume("RESULT geodata 8 1 0 0 0",3);counters.finish(2);
+    if(counters.errors || counters.skipped!=1)throw std::runtime_error("Partial export counted as fatal error");
+    counters={};counters.consume("SKIPPED: door invalid",0);counters.consume("RESULT doors 303 2 1 1 5",0);
+    if(counters.skipped!=4 || counters.warnings!=5)throw std::runtime_error("Door result counters mix duplicates with skipped items");
+    counters.consume("ERROR: output is not writable",0);counters.finish(1);
+    if(counters.errors!=1)throw std::runtime_error("Fatal error counted twice");
+    counters={};counters.finish(1);
+    if(counters.errors!=1 || counters.warnings || counters.skipped)throw std::runtime_error("Silent failed worker is not counted");
+    if(counters.details[0].size()!=1)throw std::runtime_error("Silent failure has no details");
+    counters={};
+    counters.consume("Duplicate door IDs mean that multiple doors share an ID.",0);
+    counters.consume("For stacked duplicates, only the upper placement is exported.",0);
+    counters.consume("Duplicate door IDs:",0);
+    counters.consume("19_26_Classic: 2 duplicate door IDs. IDs: 19260003, 19260007.",0);
+    counters.consume("RESULT doors 303 0 0 0 2",0);
+    if(counters.warnings!=2 || counters.details[1].size()!=1 || counters.details[1][0].reason.find("19260007")==std::string::npos || counters.details[1][0].reason.find("upper placement")==std::string::npos)throw std::runtime_error("Duplicate door warning details lost");
+    counters={};counters.consume("RESULT water 100 3 0 0 0",1);
+    if(counters.details[2].size()!=1)throw std::runtime_error("Summary-only skips have no fallback details");
     scanLog="SKIPPED: 20_22.unr / Mover8: Missing door ID\nRESULT doors 303 2 0 0 0\n";
     const auto skipped=completionText(2);
     if (skipped.first!=i18n::format("result_doors",303,2) || skipped.second.find(L"Mover8: Missing door ID")==std::wstring::npos) throw std::runtime_error("Skipped-item reason is not visible");
     scanLog="Duplicate door IDs mean that multiple doors share an ID.\nDuplicate door IDs:\n19_26_Classic: 1 duplicate door ID. ID: 19260003.\nRESULT doors 303 0 0 0 1\n";
     const auto duplicate=completionText(0);
-    if (duplicate.first!=i18n::format("result_doors",303,1) || duplicate.second.find(L"19260003")==std::wstring::npos) throw std::runtime_error("Duplicate warning was lost");
+    if (duplicate.first!=i18n::format("result_doors",303,0) || duplicate.second.find(L"19260003")==std::wstring::npos) throw std::runtime_error("Duplicate warning was lost");
+    scanLog="11_23.unr: Terrain maximum-X edge: flat fallback used.\nRESULT geodata 1 0 0 0 0\n";
+    const auto info=completionText(0);
+    if(info.first!=i18n::format("result_geodata",1,0) || info.second.find(i18n::tr("result_warnings"))!=std::wstring::npos)throw std::runtime_error("Routine terrain fallback shown as warning");
+    scanLog="WARNING: 11_23.unr: Corrupt neighbouring terrain; flat fallback used.\nRESULT geodata 1 0 0 0 0\n";
+    const auto warning=completionText(0);
+    if(warning.first!=i18n::format("result_geodata",1,0) || warning.second.find(L"flat fallback used.")==std::wstring::npos || warning.second.find(i18n::tr("result_warnings"))==std::wstring::npos)throw std::runtime_error("Terrain fallback warning lost or counted as skipped map");
     scanLog="ERROR: Output directory is not writable\n";
     if (completionText(1).second.find(L"not writable")==std::wstring::npos) throw std::runtime_error("Failure reason was lost");
     return 0;

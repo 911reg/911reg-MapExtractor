@@ -2,7 +2,9 @@
 
 Turns Lineage II client maps into server-ready data. One Windows program, no install.
 
-![MapExtractor building geodata for five maps](docs/demo.gif)
+![MapExtractor interface](docs/Snapshot.png)
+
+[Watch geodata generation](docs/demo.gif)
 
 ## Features
 

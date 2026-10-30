@@ -181,7 +181,9 @@ static int run(int argc, wchar_t** argv) {
     if (argc == 3 && std::wstring(argv[1]) == L"--inspect-collision") return extractor::collision::inspect(argv[2]);
     if (argc == 3 && std::wstring(argv[1]) == L"--check-collision") {
         const auto scene=extractor::collision::read(argv[2]);
-        std::cout << "terrain=" << scene.terrain << " bsp=" << scene.bsp << " mesh=" << scene.meshes << " volumes=" << scene.volumes << " errors=" << scene.errors.size() << '\n';
+        std::cout << "terrain=" << scene.terrain << " bsp=" << scene.bsp << " mesh=" << scene.meshes << " volumes=" << scene.volumes << " cylinders=" << scene.cylinders.size() << " errors=" << scene.errors.size() << '\n';
+        for (const auto& note:scene.notes) std::cout << note << '\n';
+        for (const auto& warning:scene.warnings) std::cout << "WARNING: " << warning << '\n';
         for (const auto& error:scene.errors) std::cout << error << '\n'; return scene.errors.empty() ? 0 : 2;
     }
     if (argc == 2 && std::wstring(argv[1]) == L"--verify-geodata") return extractor::verifyGeodata();
@@ -214,7 +216,7 @@ static int run(int argc, wchar_t** argv) {
         std::cout << "Language checks passed: " << i18n::languages().size() << '\n'; return 0;
     }
     if (std::wstring(argv[1]) == L"--help") {
-        std::cout << "911reg MapExtractor 0.8.0 | CPU only\n"
+        std::cout << "911reg MapExtractor 0.9.0 | CPU only\n"
             << "MapExtractor scan <client-folder-or-map.unr> --output <manifest.json> [--threads 1..64]\n"
             << "MapExtractor doors <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
             << "MapExtractor water <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
@@ -249,6 +251,7 @@ static int run(int argc, wchar_t** argv) {
     unsigned workers = extractor::defaultWorkers();
     for (int i = 3; i < argc; ++i) {
         const std::wstring option = argv[i];
+        if (option == L"--no-collision-cache") { extractor::useCollisionCache=false; continue; }
         if (option == L"--exact-heights") { extractor::compactGeodata=false; continue; }
         if (option == L"--no-pathnodes") { extractor::emitPathnodes=false; continue; }
         if (option == L"--world-heights") { extractor::retailHeightOffsets=false; continue; }

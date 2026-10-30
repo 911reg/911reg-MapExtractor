@@ -85,10 +85,15 @@ selects it. Render triangles are not substituted for missing collision.
 Transforms include Location, PrePivot, DrawScale, DrawScale3D, quantized UE2
 rotation and mirrored winding. Blocking volumes use their transformed Models.
 
+StaticMeshActor cylinder overrides use Location, CollisionRadius and
+CollisionHeight (half-height) directly in world space. Circular cell overlap
+and the complete vertical solid span are rasterized analytically, with no
+mesh package dependency or polygon approximation. Terrain XY clipping applies.
+
 Native layouts are bounded to the supported UE2 package profiles. Missing
-assets, malformed relevant arrays, cylinder overrides and unrecognized
-potentially blocking mesh subclasses are explicit errors, preventing publication
-of that tile. Doors and animated/nonstatic meshes are excluded from the static
+static-mesh packages exclude affected actors with warnings. Missing required
+terrain/model assets, malformed relevant arrays and unrecognized potentially
+blocking mesh subclasses remain errors, preventing publication of that tile. Doors and animated/nonstatic meshes are excluded from the static
 environment and counted in per-map reports. No editor code, executable,
 renderer, headers or runtime is linked or shipped with the extractor.
 
@@ -182,11 +187,11 @@ The legacy `.pn` writer follows the supplied PathnodeGenerator data layout: 256 
 
 Links follow NSWE cell transitions; diagonals require both orthogonal passages to agree on the target layer. Region borders require neighbouring data. The writer is independently implemented; reference application code and rendering libraries are not included.
 
-Water geometry is shared between XML export and geodata movement checks. Vertical-prism holes are decomposed along native cap faces; higher-priority dry prisms are subtracted in XY and Z. Sloped volumes, unknown or tied overlapping priorities and legacy ZoneInfo remain explicit failures instead of bounding-box approximations. Geodata uses water to classify submerged floors; water surfaces are not fabricated as solid floors. Server swimming still requires the matching water-zone definitions.
+Vertical-prism water is shared between XML export and geodata movement checks. Holes are decomposed along native cap faces; higher-priority dry prisms are subtracted in XY and Z. Geodata can additionally classify non-prismatic brush water using serialized BSP node planes, front/back links, solidity flags and RootOutside. Its planes are transformed with the actor's inverse transpose, so rotated, reflected, scaled, concave and warped-polygon brushes use their native BSP classification rather than a bounding box or fitted vertex plane. On this path, dry/wet priority is evaluated at each sampled floor point. Malformed/cyclic BSP, unknown or tied overlapping priorities and legacy ZoneInfo remain explicit failures. XML formats that require vertical prisms continue to reject unsupported shapes. Geodata uses water to classify submerged floors; water surfaces are not fabricated as solid floors. Server swimming still requires the matching water-zone definitions.
 
 G3DEditor is a read-only format reference: https://github.com/MobiusDevelopment/G3DEditor/tree/master/G3D-Editor. No GPL implementation or renderer was copied into this executable. Client reference dumps are local test inputs, not shipped assets.
 
-World bounds: horizontal world-BSP caps at exactly Z=-16384 or +16384 are excluded even when split, clipped or only partially covering the region. Terrain and mesh surfaces are not excluded by this rule. Vertical BSP/blocking walls whose top is outside the encodable height range remain solid collision spans but do not create an out-of-range walkable top. No height is clamped to conceal an invalid surface.
+World bounds: horizontal world-BSP caps at exactly Z=-16384 or +16384 are excluded even when split, clipped or only partially covering the region. Terrain and mesh surfaces are not excluded by this rule. Vertical BSP/blocking walls whose top is outside the encodable height range remain solid collision spans but do not create an out-of-range walkable top. All finite floor candidates outside the packed range [-16384, 16384) are omitted from exported layers, with a per-map count in the Console and debug report. Their solid spans remain in the rasterization data for occlusion and headroom; other representable floors are retained. The encoder remains strict, and no height is clamped or wrapped.
 
 Bellion matching-client calibration: a 256-sample texture with serialized full 256-quad sector coverage needs a clamped extra vertex row/column; bitmap indices retain the texture-width stride. Terrain centre samples take precedence over off-centre triangle fragments. Downward-facing surfaces supply collision/ceilings, not walkable floors. Consistently wound watertight mesh collision contributes solid interior spans; open meshes are not filled. The matching client dump writes direction bits least-significant first; test import normalizes that text convention before comparing L2J masks. Exact client parity remains pending; cell/layer differences are recorded under `_tests`.
 

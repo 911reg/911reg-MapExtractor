@@ -13,6 +13,7 @@ namespace extractor {
 inline std::vector<std::filesystem::path> requestedMaps;
 inline bool allVariants=false, combineXml=false;
 inline bool debugFiles=true;
+inline bool useCollisionCache=true;
 inline bool retailHeightOffsets=true,emitPathnodes=true,pathnodesOnly=false,compactGeodata=true;
 inline std::string geodataFormat="l2j";
 inline std::string targetProfile="all";

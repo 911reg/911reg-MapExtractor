@@ -25,13 +25,17 @@ replaced using Choose. No client locations are built into the application.
 
 ## Interface
 
-The fixed-size window is drawn with GDI+ in a near-black navy and orange palette (tokens in `src/ui_theme.h`, panels in `src/ui_studio.h`). Configuration, the map checklist and the decorative ASCII Lab sit above the console, the progress panel and the ASCII donut; a segmented status bar shows state, folders, workers and time. The custom header supplies minimize/close controls; maximize and resizing are disabled, and sizes scale with DPI. Console **Copy**, **Save log** and **Clear** act on the visible console. Lines carry a timestamp and a severity tag (`INFO`, `SCAN`, `STEP`, `PROG`, `OK`, `WARN`, `FAIL`, `DONE`, `PAUSE`, `RUN`, `CLEAN`). **Ctrl+Enter** starts extraction; while it runs, the Start button pauses and resumes the extractor process (session only, nothing is saved).
+The fixed-size window is drawn with GDI+ in a near-black navy and orange palette (tokens in `src/ui_theme.h`, panels in `src/ui_studio.h`). Configuration, the map checklist and the decorative ASCII Lab sit above the console, the progress panel and the ASCII donut; a segmented status bar shows state, folders, workers and time. The custom header supplies minimize/close controls; maximize and resizing are disabled, and sizes scale with DPI. Console **Copy**, **Save log** and **Clear** act on the visible console. Tags have no padding inside the brackets and one space before the message, for example `[STEP] Rasterizing`. Lines carry a timestamp and a severity tag (`INFO`, `SCAN`, `STEP`, `PROG`, `OK`, `SKIP`, `WARN`, `FAIL`, `DONE`, `PAUSE`, `RUN`, `CLEAN`). **Ctrl+Enter** starts extraction; while it runs, the Start button pauses and resumes the extractor process (session only, nothing is saved).
 
 Map counts, current map, elapsed time and progress come from the running job. Remaining time is estimated only after a map finishes. Windows' reduced-animation preference stops the animations. No CPU/memory utilization or fictional statistics are shown. Extraction runs in a separate process at below-normal priority inside a job object, so it ends with the window. A hidden `.<Task>.incomplete` marker next to the task folder lets the next start or run remove output from a run that was closed or killed.
 
 The map list scrolls vertically and shows each file's name, Normal/Classic variant and actual size; filter to find a map. Orange checks, all/clear, normal/Classic preferences, tooltips, output clearing and saved preferences remain available. One extraction task is selected at a time. The donut does not render client geometry.
 
-`--verify-ui-studio <new-folder>` checks maximize suppression, internal layout stress, selection, console paragraph/scroll behavior and animation frames and writes UI proof images under the supplied folder. Use an ignored `_tests` destination for verification.
+The console header shows current-run error, warning and skipped-export badges. Warnings are deduplicated by their complete message; duplicate-door notices remain warnings rather than skipped exports. Geodata/scan diagnostics for several actors in one failed map count as one skipped map, and the final worker result supplies authoritative skipped totals. Console Clear preserves these counters; a new extraction resets them. Only the counter panel redraws when its totals change. Long translations move the badges onto a second header row. The cyan progress badge shows average processed maps per minute, including skipped maps and excluding paused time; it freezes at completion.
+
+Click a nonzero console badge to open its modeless details panel. The panel uses the badge color and stores its records independently of console text. It offers case-insensitive search across full source/reason text, a scrollable list with repeat counts, a full-reason pane, Copy selected and Copy listed (the filtered list). Repeated warning messages share one record; failed geodata/scan maps group their actor reasons into one record. Duplicate-door records retain their ID lists and upper-placement explanation. Records and counters survive console Clear and reset together at the next run. The panel refreshes while extraction continues, preserving its filter and selection without touching the console text, selection or scroll position. Escape or Close dismisses it; arrow keys and Enter/Space operate focused badges. Zero-count badges are inactive.
+
+`--verify-ui-studio <new-folder>` checks maximize suppression, internal layout stress, selection, console paragraph/scroll behavior, persistent counters, large totals, seven translated layouts and animation frames and writes UI proof images under the supplied folder. It also checks details-panel mouse/keyboard activation, repeated warnings, grouped skip reasons, filtering, copy payloads, live refresh, Clear/new-run behavior and console-state preservation. `--verify-ui-simple-geodata` opens a warning panel during real extraction when warnings occur and captures its final contents. Use ignored `_tests` destinations for verification.
 
 ## Door results
 
@@ -65,6 +69,8 @@ four RangeDelta corners at (+/-80, +/-80, 0). Serialized map properties always
 win. Door and water extraction do not open Engine.u or require System packages.
 Water defaults include bWaterVolume=true for known WaterVolume classes and
 inherited Priority=0 for known WaterVolume/Engine.PhysicsVolume classes.
+
+The tagged-property reader supports both integer and tagged-struct `ZoneRenderState` arrays. An integer layout is identified by its exact count/payload size; legacy tagged-struct arrays still parse structurally because some client tags understate their serialized size. Parsing remains bounded by the export. A null TerrainMap means no terrain collision, matching the client; valid native dimensions and ToWorld axes still establish the XY extraction footprint. Other geometry is retained and no height surface is invented.
 Unknown subclass priority remains unresolved rather than guessed. Only defaults
 used by extraction are bundled; geometry still comes from the selected maps.
 
@@ -83,7 +89,7 @@ legacy ZoneInfo regions or generic physics volumes.
 Four server-profile folders contain one XML file per map. `raw/*.faces.tsv`
 preserves world-space brush faces; `raw/*.zones.tsv` records accepted footprints
 and source Z limits. `911reg-water-report.txt` lists accepted/rejected volumes.
-Concave vertical prisms, separate components and holes are supported. Higher-priority dry prisms are subtracted without expanding the water footprint. Sloped brushes, incomplete geometry and overlapping dry volumes with tied or unknown priorities are reported instead of guessed. General custom-class inheritance remains pending.
+Concave vertical prisms, separate components and holes are supported. Higher-priority dry prisms are subtracted without expanding the water footprint. Water XML exports still reject sloped brushes, incomplete geometry and overlapping dry volumes with tied or unknown priorities. Geodata additionally supports non-prismatic water through the brush's serialized BSP planes, child nodes and root state. Planes use the full inverse-transpose actor transform, including rotation, pivot, nonuniform scale and reflection. BSP traversal supports concave solids and does not derive planes from potentially warped polygon vertices or approximate the volume with its bounds. Dry/wet priority is evaluated at sampled floor points on that path. Invalid nodes, cyclic trees and ambiguous overlapping priorities remain errors. General custom-class inheritance remains pending.
 
 Server coordinates are integers: XY uses nearest rounding, while minimum Z is
 rounded up and maximum Z down to remain inside the source's vertical interval.
@@ -168,7 +174,11 @@ a thin diagonal sliver is kept. Solid spans merge when the gap is 3 units or les
 A lower span is dropped when the next floor leaves less than 46 units of headroom.
 Heights include client surface offsets and truncate toward zero onto the required multiple of 8. Terrain uses +26; the fractional +26.296875 offset was rejected by the matching Bellion client dump. `--world-heights` disables offsets for diagnostics; `--retail-heights` explicitly enables the default mode. Fully open, single-floor blocks spanning at most 32 height units are compacted to one height, with every change bounded to 24 units. `--exact-heights` disables this.
 Mesh steps use an unquantized surface-rise limit of 16.32; packed heights do not decide the climb. Terrain checks steep slopes before granting movement, even when quantization makes the stored rise small. Exposed column tops and PlayerStart floors seed movement reachability; disconnected lower floors are removed. Isolated teleport-only interiors without a seed require further validation.
-Unknown cells are closed at -16352. Map boundaries stay closed unless neighbouring collision supplies a compatible floor. Neighbours are read from the same client directory and same normal/Classic variant; they are never exported just because boundary validation reads them. Missing neighbours stay closed, and unreadable relevant neighbours prevent publishing an unchecked seam.
+Unknown cells are closed at -16352. Map boundaries stay closed unless neighbouring collision supplies a compatible floor. Neighbours are read from the same client directory and same normal/Classic variant; they are never exported just because boundary validation reads them. Missing neighbours stay closed, and unreadable relevant neighbours prevent publishing an unchecked seam. A missing static-mesh package or a missing mesh export inside an existing package excludes that actor with a warning instead of rejecting the map or its neighbours. Missing terrain/model packages, ambiguous mesh references and corrupt collision data still fail validation. A partially zero DrawScale3D produces an actor warning and no collision because its native collision transform is not invertible; world-space cylinder overrides remain independent of draw scale. StaticMeshActor cylinder overrides are read directly from Location, CollisionRadius and CollisionHeight (half-height). They are rasterized analytically against each cell and the terrain footprint, independently of mesh packages, draw scale, rotation or pivot. Zero-radius or zero-height cylinders contribute no volume; invalid dimensions fail validation.
+
+Packed complex/multilayer geodata supports heights from -16384 through 16376 in steps of eight. Floor candidates outside the raw quantization interval [-16384, 16384) are excluded and counted in a warning, while their solid collision spans still participate in headroom and occlusion. Valid floors continue to export; neither clamping nor signed overflow is used. A map with no remaining walkable cells still fails explicitly.
+
+Each generation run shares decoded collision scenes, terrain samples and parsed packages between map exports and boundary checks. Cached scenes are immutable; rasterization uses a working copy. Full canonical paths distinguish clients and Normal/Classic variants. Least-recently-used entries are evicted as needed, and all caches are released when the generation run ends. The collision budget uses one quarter of initially available physical RAM, between 64 MiB and 2 GiB. Parsed package data is capped at 512 MiB (less with a small collision budget), and decoded terrain samples at 64 MiB. These are retained-cache budgets; active geometry and rasterization use additional memory. `--no-collision-cache` disables sharing for diagnostic comparisons. The Console prints cache hit, read, eviction and retained-collision statistics at the end of the run.
 
 Geodata can also generate `Pathnodes/XX_YY.pn`. The separate **Pathnodes** task writes directly to `Output/Pathnodes`. The geodata toggle controls whether nodes are included and is saved in settings.ini. PN uses the supplied reference's legacy block-centre format; server loaders using another layout need a separate writer. Cardinal links trace all eight cells between block centres. Diagonals require both cardinal passages at each step, preventing corner cutting. Links are target-layer indices plus one, with zero for no route. Negative heights remain signed.
 
@@ -187,9 +197,10 @@ simple collision models, and blocking-volume BSP. Actor transforms, collision
 flags and per-material EnableCollision are applied. Dynamic movers/animated
 meshes are excluded and counted, rather than frozen permanently into geodata.
 
-Missing packages, malformed collision, unsupported blocking subclasses and
-cylinder overrides fail the affected tile and are reported. A tile with known
-missing collision is never published. Other selected maps may still finish.
+Malformed collision, missing required terrain/model packages and unsupported
+blocking subclasses fail the affected tile and are reported. Missing static-mesh
+packages exclude the affected actor with a warning. Native StaticMeshActor
+cylinder overrides are supported. Other selected maps may still finish.
 A set direction bit is what the server walks. It does not measure the step again.
 Test the result in game before replacing a live geodata folder. This is not a claim
 that every retail cell matches.
@@ -255,8 +266,8 @@ the extractor.
 
 ## Next
 
-Mesh fallback, custom classes, an FandC profile, non-prismatic water and cylinder
-overrides on blocking meshes are still open. Test generated geodata in game
+Mesh fallback, custom classes, an FandC profile and non-prismatic water XML
+are still open. Test generated geodata in game
 before replacing a live server.
 
 Collision triangles are two-sided. Movement chooses the lowest neighbouring span with shared headroom, uses unquantized surface rise (16.32 units onto gentle surfaces; 3.125 onto steep surfaces), and checks directional steep-terrain slope. Reachability retains exposed column tops and PlayerStart-connected lower floors. These rules apply to every mesh and map; there are no asset exclusions.

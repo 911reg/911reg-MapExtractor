@@ -95,7 +95,9 @@ struct Package {
             else if (property.kind == 9 && property.name == "ZoneRenderState") {
                 const auto count = reader.compact();
                 if (count < 0 || count > 100000) throw std::runtime_error("Invalid zone property array");
-                for (int32_t i = 0; i < count; ++i) tags(reader,depth+1);
+                const auto prefix=reader.offset-start;
+                if(size==prefix+size_t(count)*4)reader.skip(size_t(count)*4);
+                else for (int32_t i = 0; i < count; ++i) tags(reader,depth+1);
             } else reader.skip(property.kind == 3 ? 0 : size);
             property.value.assign(reader.bytes.begin()+start,reader.bytes.begin()+reader.offset);
             result.push_back(std::move(property));

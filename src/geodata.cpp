@@ -47,8 +47,11 @@ using Block = std::array<Cell, 64>;
 struct Geo {
     double ox = 0, oy = 0;
     std::vector<Triangle> triangles;
+    std::vector<collision::Cylinder> cylinders;
+    std::map<size_t,std::vector<uint32_t>> cylinderIndex;
     std::vector<V> seeds;
     bool boundaryOnly=false;
+    std::atomic<size_t> rejectedHeights{0};
     std::map<std::pair<int,int>,Cell> halo;
     std::array<std::vector<uint32_t>, 65536> index;
     std::array<std::unique_ptr<Block>, 65536> blocks;
@@ -140,6 +143,19 @@ void buildIndex(Geo& geo) {
                 geo.index[size_t(x) * 256 + y].push_back(uint32_t(i));
             }
     }
+    for(size_t i=0;i<geo.cylinders.size();++i) {
+        const auto& shape=geo.cylinders[i];
+        const double minX=std::max(shape.bounds.minX,shape.location.x-shape.radius)-geo.ox,maxX=std::min(shape.bounds.maxX,shape.location.x+shape.radius)-geo.ox;
+        const double minY=std::max(shape.bounds.minY,shape.location.y-shape.radius)-geo.oy,maxY=std::min(shape.bounds.maxY,shape.location.y+shape.radius)-geo.oy;
+        if(maxX<=0 || maxY<=0 || minX>=32768 || minY>=32768 || minX>=maxX || minY>=maxY)continue;
+        for(int x=std::clamp(int(std::floor(minX/128)),0,255);x<=std::clamp(int(std::floor(maxX/128)),0,255);++x)
+            for(int y=std::clamp(int(std::floor(minY/128)),0,255);y<=std::clamp(int(std::floor(maxY/128)),0,255);++y) {
+                if(geo.boundaryOnly && x!=0 && y!=0 && x!=255 && y!=255)continue;
+                if(++assignments>16000000)throw std::runtime_error("Collision spatial-index budget exceeded");
+                geo.cylinderIndex[size_t(x)*256+y].push_back(uint32_t(i));
+            }
+    }
+
 }
 
 template<class Work>
@@ -285,11 +301,21 @@ void addSample(std::vector<Sample>& samples, const Triangle& triangle, float x0,
     samples.push_back(sample);
 }
 
+void addCylinderSample(std::vector<Sample>& samples,const collision::Cylinder& shape,float x0,float y0) {
+    if(!collision::cylinderHits(shape,{x0,y0,x0+16.,y0+16.}))return;
+    const double low=shape.location.z-shape.halfHeight,high=shape.location.z+shape.halfHeight;
+    Sample sample;sample.smin=int(std::floor(low));sample.smax=std::max(sample.smin+1,int(std::ceil(high)));sample.z=float(high);sample.object=shape.object;
+    samples.push_back(sample);
+}
+
 void rasterize(Geo& geo, unsigned workers) {
+    geo.rejectedHeights=0;
     parallel(workers, [&](size_t blockIndex) {
-        if (geo.index[blockIndex].empty()) return;
+        const auto cylinders=geo.cylinderIndex.find(blockIndex);
+        if (geo.index[blockIndex].empty() && cylinders==geo.cylinderIndex.end()) return;
         auto block = std::make_unique<Block>();
         bool used = false;
+        size_t rejected=0;
         for (int x = 0; x < 8; ++x) for (int y = 0; y < 8; ++y) {
             const float x0 = float(geo.ox + (double(blockIndex / 256) * 8 + x) * 16);
             const float y0 = float(geo.oy + (double(blockIndex % 256) * 8 + y) * 16);
@@ -297,6 +323,10 @@ void rasterize(Geo& geo, unsigned workers) {
             for (auto ref : geo.index[blockIndex]) {
                 addSample(samples, geo.triangles[ref], x0, y0);
                 if (samples.size() > 4096) throw std::runtime_error("Cell collision complexity exceeds budget");
+            }
+            if(cylinders!=geo.cylinderIndex.end())for(auto ref:cylinders->second) {
+                addCylinderSample(samples,geo.cylinders[ref],x0,y0);
+                if(samples.size()>4096)throw std::runtime_error("Cell collision complexity exceeds budget");
             }
             if (samples.empty()) continue;
             std::map<uint32_t,std::vector<std::pair<float,int>>> objects;
@@ -345,6 +375,7 @@ void rasterize(Geo& geo, unsigned workers) {
                 }
 
                 if (top && top->steep && (top->kind==2 || top->kind==3) && (height>=16384 || height<-16384)) continue;
+                if(std::isfinite(height) && (height < -16384.f || height >= 16384.f)) { ++rejected;continue; }
                 Layer layer;
                 layer.surface = height;
                 layer.z = quantize8(height);
@@ -357,8 +388,13 @@ void rasterize(Geo& geo, unsigned workers) {
             if (cell.size() > 125) throw std::runtime_error("Cell exceeds 125 L2J layers");
             used |= !cell.empty();
         }
+        if(rejected)geo.rejectedHeights.fetch_add(rejected,std::memory_order_relaxed);
         if (used) geo.blocks[blockIndex] = std::move(block);
     }, "rasterize floors");
+}
+
+std::string heightRangeNotice(const Geo& geo) {
+    return "Ignored "+std::to_string(geo.rejectedHeights.load())+" floor candidates outside the packed geodata height range [-16384, 16384). Solid collision and representable floors were retained; heights were not clamped or wrapped.";
 }
 
 // Steep terrain may still be walked when the slope along this step is at most 0.3.
@@ -522,17 +558,13 @@ void applyWater(Geo& geo,const std::vector<WaterGeometry>& water) {
     for (int x=0;x<2048;++x) for (int y=0;y<2048;++y) {
         auto& block=geo.blocks[size_t(x/8)*256+y/8]; if (!block) continue;
         auto& cell=(*block)[size_t(x%8)*8+y%8];
-        for (auto& layer:cell) for (const auto& zone:water) {
-            const double wx=geo.ox+x*16+8,wy=geo.oy+y*16+8;
-            if (layer.surface<zone.low || layer.surface>zone.high || !waterContains(zone,wx,wy)) continue;
-            layer.wet=true; ++touched; break;
-        }
+        for(auto& layer:cell)if(waterAt(water,geo.ox+x*16+8,geo.oy+y*16+8,layer.surface)){layer.wet=true;++touched;}
     }
     if (!water.empty()) std::cerr<<"STAGE water collision | "<<water.size()<<" zones, "<<touched<<" submerged floors\n";
 }
 
 using BoundaryCache=std::map<std::filesystem::path,std::shared_ptr<Geo>>;
-void addHalo(Geo& geo,const std::filesystem::path& source,unsigned workers,BoundaryCache& cache) {
+void addHalo(Geo& geo,const std::filesystem::path& source,unsigned workers,BoundaryCache& cache,collision::Cache* collisionCache=nullptr) {
     const int tx=int(geo.ox/32768)+20,ty=int(geo.oy/32768)+18;
     const bool classic=classicMap(source);
     std::map<std::wstring,std::filesystem::path> files;
@@ -546,14 +578,18 @@ void addHalo(Geo& geo,const std::filesystem::path& source,unsigned workers,Bound
         if (cached==cache.end()) {
             std::cerr<<"MAP "<<output::utf8(found->second.filename())<<" | neighbouring boundary collision\n";
             auto edge=std::make_shared<Geo>(); edge->boundaryOnly=true; edge->ox=geo.ox+dx*32768; edge->oy=geo.oy+dy*32768;
-            auto scene=collision::read(found->second);
+            const auto loaded=collisionCache ? collisionCache->read(found->second) : std::make_shared<const collision::Scene>(collision::read(found->second));
+            const auto& scene=*loaded;
+            for(const auto& note:scene.notes)std::cerr<<output::utf8(found->second.filename())<<": "<<note<<'\n';
+            for(const auto& warning:scene.warnings)std::cerr<<"WARNING: "<<output::utf8(found->second.filename())<<": "<<warning<<'\n';
             if (!scene.errors.empty()) throw std::runtime_error("Cannot validate neighbouring map "+output::utf8(found->second.filename())+": "+scene.errors.front());
-            edge->triangles=std::move(scene.triangles); dropEnclosure(edge->triangles,edge->ox,edge->oy);
+            edge->triangles=scene.triangles;edge->cylinders=scene.cylinders; dropEnclosure(edge->triangles,edge->ox,edge->oy);
             buildIndex(*edge); rasterize(*edge,workers);
+            if(edge->rejectedHeights)std::cerr<<"WARNING: "<<output::utf8(found->second.filename())<<": "<<heightRangeNotice(*edge)<<'\n';
             applyWater(*edge,readWaterGeometry(found->second));
             connect(*edge,workers);
             for (auto& block:edge->blocks) if (block) for (auto& cell:*block) std::sort(cell.begin(),cell.end(),[](const Layer& a,const Layer& b) { return a.z>b.z; });
-            edge->triangles.clear(); edge->triangles.shrink_to_fit(); for (auto& bucket:edge->index) { std::vector<uint32_t>().swap(bucket); }
+            edge->triangles.clear(); edge->triangles.shrink_to_fit();edge->cylinders.clear();edge->cylinders.shrink_to_fit();edge->cylinderIndex.clear(); for (auto& bucket:edge->index) { std::vector<uint32_t>().swap(bucket); }
             if (cache.size()>=8) cache.erase(cache.begin());
             cached=cache.emplace(found->second,std::move(edge)).first;
         }
@@ -706,7 +742,7 @@ size_t writeGeo(const Geo& geo, const std::filesystem::path& file, Format format
 }
 
 // Region origin is ((mapX - 20) * 32768, (mapY - 18) * 32768). Files are written as .partial and renamed together.
-static int generateTile(const std::filesystem::path& input, const std::filesystem::path& output, unsigned workers, const std::wstring& stem, bool fixture, BoundaryCache* cache=nullptr) {
+static int generateTile(const std::filesystem::path& input, const std::filesystem::path& output, unsigned workers, const std::wstring& stem, bool fixture, BoundaryCache* cache=nullptr,collision::Cache* collisionCache=nullptr) {
     namespace fs = std::filesystem;
     const auto source = fs::canonical(input);
     std::wsmatch tile;
@@ -719,10 +755,15 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
     if (fixture) geo->triangles = loadObj(source);
     else {
         std::cerr << "MAP " << output::utf8(source.filename()) << " | native client collision\n";
-        auto scene = collision::read(source);
+        const auto loaded=collisionCache ? collisionCache->read(source) : std::make_shared<const collision::Scene>(collision::read(source));
+        const auto& scene=*loaded;
+        for(const auto& note:scene.notes)std::cerr<<output::utf8(source.filename())<<": "<<note<<'\n';
+        for(const auto& warning:scene.warnings)std::cerr<<"WARNING: "<<output::utf8(source.filename())<<": "<<warning<<'\n';
         facts = "Terrain triangles: " + std::to_string(scene.terrain) + "\nBSP triangles: " + std::to_string(scene.bsp)
             + "\nStatic-mesh triangles: " + std::to_string(scene.meshes) + "\nBlocking-volume triangles: " + std::to_string(scene.volumes)
-            + "\nDynamic actors excluded: " + std::to_string(scene.dynamic) + "\nPlayer starts: " + std::to_string(scene.seeds.size()) + "\n";
+            + "\nCollision cylinders: " + std::to_string(scene.cylinders.size()) + "\nDynamic actors excluded: " + std::to_string(scene.dynamic) + "\nPlayer starts: " + std::to_string(scene.seeds.size()) + "\n";
+        for(const auto& note:scene.notes) facts+="Info: "+note+'\n';
+        for(const auto& warning:scene.warnings) facts+="Warning: "+warning+'\n';
         if (!scene.errors.empty()) {
             std::string errors;
             for (const auto& error : scene.errors) errors += error + '\n';
@@ -730,15 +771,21 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
             for (const auto& error : scene.errors) std::cerr << "SKIPPED: " << output::utf8(source.filename()) << " / " << error << '\n';
             throw std::runtime_error("Client collision data could not be read completely (" + std::to_string(scene.errors.size()) + " issues)");
         }
-        geo->triangles = std::move(scene.triangles);
-        geo->seeds = std::move(scene.seeds);
+        geo->triangles = scene.triangles;
+        geo->cylinders = scene.cylinders;
+        geo->seeds = scene.seeds;
     }
     dropEnclosure(geo->triangles, geo->ox, geo->oy);
-    std::cerr << "STAGE spatial index | triangles=" << geo->triangles.size() << '\n';
+    std::cerr << "STAGE spatial index | triangles=" << geo->triangles.size() << ", cylinders=" << geo->cylinders.size() << '\n';
     buildIndex(*geo);
     std::cerr << "STAGE rasterize floors | 16-unit spans\n";
     rasterize(*geo, workers);
-    if (!fixture) { applyWater(*geo,readWaterGeometry(source)); if (cache) addHalo(*geo,source,workers,*cache); }
+    if(geo->rejectedHeights) {
+        const auto notice=heightRangeNotice(*geo);
+        std::cerr<<"WARNING: "<<output::utf8(source.filename())<<": "<<notice<<'\n';
+        facts+="Warning: "+notice+'\n';
+    }
+    if (!fixture) { applyWater(*geo,readWaterGeometry(source)); if (cache) addHalo(*geo,source,workers,*cache,collisionCache); }
     std::cerr << "STAGE movement links | headroom=46\n";
     connect(*geo, workers);
     std::cerr << "STAGE reachable floors | exposed surfaces and player starts\n";
@@ -774,7 +821,7 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
         "CPU geodata\nSource: " + output::utf8(source.filename()) + "\nLayers: " + std::to_string(count) + "\n" + facts
         + "Native UE2 client collision; dynamic doors are exported separately. Test movement before replacing a live server.\n"
         + "Settings: cell 16, height unit 8, client surface offsets by default (raw surfaces only with --world-heights), truncate toward zero, headroom 46, mesh surface step 16.32, steep climb 3.125, walk angle 45.573.\n"
-        + "Lower floors require a movement route from an exposed surface or PlayerStart. Movement uses unquantized surface rise and the lowest compatible neighbour span. Adjacent region collision validates seams; unavailable neighbours stay closed. Fully open single-floor blocks may be compacted with height changes bounded to 24 units; --exact-heights disables this. Empty cells are closed at -16352.\n"
+        + "Lower floors require a movement route from an exposed surface or PlayerStart. Movement uses unquantized surface rise and the lowest compatible neighbour span. Terrain collision is clipped to the TerrainInfo XY footprint. Missing edge vertices use matching neighbour world heights; unavailable samples extend the local edge flat with an informational message. Adjacent region collision validates movement seams; unavailable neighbours stay closed. Fully open single-floor blocks may be compacted with height changes bounded to 24 units; --exact-heights disables this. Empty cells are closed at -16352.\n"
         + "Formats: " + (geodataFormat == "l2j" ? "L2J/*.l2j" : geodataFormat == "l2off" ? "L2OFF/*_conv.dat" : "L2J/*.l2j and L2OFF/*_conv.dat") + ". Four cardinal directions. No live client/server files modified.\n");
     std::cerr << (pathnodesOnly ? "Pathnodes complete: " : "Geodata complete: ") << count << " layers; " << (geodataFormat == "l2j" ? "L2J" : geodataFormat == "l2off" ? "L2OFF" : "L2J, L2OFF") << ".\n";
     return 0;
@@ -859,8 +906,9 @@ int generateGeodata(const std::filesystem::path& input, const std::filesystem::p
     size_t failures = 0, done = 0;
     std::string summary = "Native client collision geodata\n";
     BoundaryCache boundaryCache;
+    collision::Cache collisionCache(useCollisionCache);
     for (const auto& map : maps) {
-        try { generateTile(map, allVariants && classicMap(map) ? output / "Classic" : output, workers, mapOutput(map, root).stem().wstring(), false, &boundaryCache); }
+        try { generateTile(map, allVariants && classicMap(map) ? output / "Classic" : output, workers, mapOutput(map, root).stem().wstring(), false, &boundaryCache,&collisionCache); }
         catch (const std::exception& error) {
             const auto tileRoot=allVariants && classicMap(map) ? output/"Classic" : output;
             const auto stem=mapOutput(map,root).stem().wstring();
@@ -872,6 +920,7 @@ int generateGeodata(const std::filesystem::path& input, const std::filesystem::p
         }
         std::cerr << "Checked " << ++done << " of " << maps.size() << " maps\n";
     }
+    std::cerr<<"STAGE collision cache | "<<collisionCache.summary()<<'\n';
     summary += "Maps: " + std::to_string(done) + "\nFailed maps: " + std::to_string(failures) + "\n";
     if (debugFiles) output::save(output / "911reg-geodata-report.txt", summary);
     if (!pathnodesOnly && emitPathnodes) for (const auto& folder:{output/"Pathnodes",output/"Classic"/"Pathnodes"}) if (fs::is_directory(folder)) writeExportReadme(folder,"PATHNODES");

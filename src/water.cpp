@@ -21,6 +21,7 @@
 #include <thread>
 #include <windows.h>
 #include <optional>
+#include <tuple>
 
 namespace extractor {
 struct WaterPoint { double x = 0, y = 0, z = 0; };
@@ -43,7 +44,7 @@ static size_t count(Reader& reader,size_t maximum = 2000000) {
     if (size < 0 || size_t(size) > maximum) throw std::runtime_error("Water model count exceeds limit");
     return size_t(size);
 }
-static std::vector<Face> modelFaces(const Package& package,int32_t reference) {
+static std::vector<Face> modelFaces(const Package& package,int32_t reference,WaterGeometry* geometry=nullptr) {
     if (reference <= 0 || size_t(reference) > package.exports.size() || package.className(size_t(reference-1)) != "Engine.Model")
         throw std::runtime_error("Water brush is not a local Model");
     const size_t index = size_t(reference-1); size_t offset = 0;
@@ -56,9 +57,11 @@ static std::vector<Face> modelFaces(const Package& package,int32_t reference) {
     struct Node { int32_t first; unsigned vertices; };
     std::vector<Node> nodes; size = count(reader,200000);
     for (size_t i = 0; i < size; ++i) {
-        reader.skip(25); Node node{reader.compact(),0}; reader.compact();
-        for (unsigned j = 0; j < 5; ++j) reader.compact();
-        reader.skip(34); node.vertices = reader.byte(); reader.skip(20); nodes.push_back(node);
+        WaterNode branch;const auto normal=readPoint(reader);branch.plane.normal={normal.x,normal.y,normal.z};branch.plane.distance=std::bit_cast<float>(reader.word());
+        reader.skip(8);const auto flags=reader.byte();Node node{reader.compact(),0};reader.compact();
+        branch.children[0]=reader.compact();branch.children[1]=reader.compact();reader.compact();reader.compact();reader.compact();
+        reader.skip(34);node.vertices=reader.byte();reader.skip(20);nodes.push_back(node);
+        branch.solid=node.vertices && !(flags&1);if(geometry)geometry->nodes.push_back(branch);
     }
     size = count(reader);
     for (size_t i = 0; i < size; ++i) {
@@ -68,6 +71,28 @@ static std::vector<Face> modelFaces(const Package& package,int32_t reference) {
     }
     std::vector<int32_t> pool; size = count(reader,4000000);
     for (size_t i = 0; i < size; ++i) { pool.push_back(reader.compact()); reader.compact(); }
+    if(geometry) {
+        reader.word();const auto zones=reader.word();if(zones>64)throw std::runtime_error("Water BSP zone count exceeds limit");
+        for(uint32_t i=0;i<zones;++i){reader.compact();reader.skip(20);}
+        reader.compact();reader.skip(count(reader)*25);reader.skip(count(reader)*4);
+        const auto leaves=count(reader);for(size_t i=0;i<leaves;++i){reader.compact();reader.compact();reader.compact();reader.skip(8);}
+        const auto lights=count(reader);for(size_t i=0;i<lights;++i)reader.compact();
+        const auto outside=reader.word();if(outside>1)throw std::runtime_error("Invalid water BSP root state");geometry->rootOutside=outside!=0;
+        for(const auto& node:geometry->nodes) {
+            const auto& n=node.plane.normal;
+            if(!std::isfinite(node.plane.distance) || n.x*n.x+n.y*n.y+n.z*n.z<1e-12)throw std::runtime_error("Invalid water BSP plane");
+            for(const auto child:node.children)if(child< -1 || child>=int64_t(geometry->nodes.size()))throw std::runtime_error("Water BSP child outside node table");
+        }
+        std::vector<uint8_t> state(geometry->nodes.size());std::vector<std::pair<int32_t,bool>> pending;
+        if(!state.empty())pending.push_back({0,false});
+        while(!pending.empty()) {
+            const auto [nodeIndex,leaving]=pending.back();pending.pop_back();
+            if(leaving){state[size_t(nodeIndex)]=2;continue;}
+            if(state[size_t(nodeIndex)]==1)throw std::runtime_error("Cyclic water BSP");
+            if(state[size_t(nodeIndex)]==2)continue;state[size_t(nodeIndex)]=1;pending.push_back({nodeIndex,true});
+            for(const auto child:geometry->nodes[size_t(nodeIndex)].children)if(child>=0)pending.push_back({child,false});
+        }
+    }
     std::vector<Face> result;
     size_t vertexBudget = 0;
     for (const auto& node : nodes) {
@@ -91,14 +116,15 @@ static std::vector<Face> modelFaces(const Package& package,int32_t reference) {
 struct WaterTransform {
     WaterPoint location{}, pivot{}, scale{1,1,1}, rotation{};
     double uniform = 1;
-    WaterPoint apply(WaterPoint p) const {
+    WaterPoint apply(WaterPoint p,bool precise=false) const {
         p = {(p.x-pivot.x)*scale.x*uniform,(p.y-pivot.y)*scale.y*uniform,(p.z-pivot.z)*scale.z*uniform};
         auto angle = [](double value) { return double((uint32_t(int32_t(value)) >> 2) & 16383)*6.2831853071795864769/16384.; };
         const double pitch = angle(rotation.x), yaw = angle(rotation.y), roll = angle(rotation.z);
         const double cp = std::cos(pitch), sp = std::sin(pitch), cy = std::cos(yaw), sy = std::sin(yaw), cr = std::cos(roll), sr = std::sin(roll);
-        WaterPoint result{float(location.x+p.x*cp*cy+p.y*(cy*sp*sr-cr*sy)-p.z*(cr*cy*sp+sr*sy)),
-            float(location.y+p.x*cp*sy+p.y*(cr*cy+sp*sr*sy)+p.z*(cy*sr-cr*sp*sy)),
-            float(location.z+p.x*sp-p.y*cp*sr+p.z*cp*cr)};
+        WaterPoint result{location.x+p.x*cp*cy+p.y*(cy*sp*sr-cr*sy)-p.z*(cr*cy*sp+sr*sy),
+            location.y+p.x*cp*sy+p.y*(cr*cy+sp*sr*sy)+p.z*(cy*sr-cr*sp*sy),
+            location.z+p.x*sp-p.y*cp*sr+p.z*cp*cr};
+        if(!precise)result={float(result.x),float(result.y),float(result.z)};
         for (double c : {result.x,result.y,result.z}) if (!std::isfinite(c) || std::abs(c) > 16777216) throw std::runtime_error("Water world coordinate outside limits");
         return result;
     }
@@ -151,6 +177,10 @@ static bool contains(const Face& polygon, WaterPoint point) {
     return inside;
 }
 struct WaterZone { std::string actor, name; Face polygon; double low = 0, high = 0; };
+class UnsupportedWaterPrism : public std::runtime_error {
+public:
+    explicit UnsupportedWaterPrism(const char* value):std::runtime_error(value){}
+};
 
 static std::vector<WaterZone> prism(const std::vector<Face>& faces,const std::string& actor,const std::string& name,bool decomposeHoles=false) {
     constexpr double tolerance = 0.01;
@@ -165,7 +195,7 @@ static std::vector<WaterZone> prism(const std::vector<Face>& faces,const std::st
         if (below) bottom.push_back(face); else if (above) top.push_back(face); else sides.push_back(face);
     }
     auto edges = boundary(bottom);
-    if (edges.empty() || edges != boundary(top)) throw std::runtime_error("Water is not a vertical prism (sloped or mismatched caps)");
+    if (edges.empty() || edges != boundary(top)) throw UnsupportedWaterPrism("Water is not a vertical prism (sloped or mismatched caps)");
     std::map<Key,std::vector<Key>> neighbors; std::map<Key,WaterPoint> points;
     for (const auto& face : bottom) for (const auto& p : face) points[key(p)] = p;
     for (const auto& [e,n] : edges) { neighbors[e.first].push_back(e.second); neighbors[e.second].push_back(e.first); }
@@ -212,12 +242,12 @@ static std::vector<WaterZone> prism(const std::vector<Face>& faces,const std::st
             for (size_t i = 0; i < face.size(); ++i) sideArea += project(face[i])*face[(i+1)%face.size()].z-project(face[(i+1)%face.size()])*face[i].z;
             wallArea[e] += std::abs(sideArea)*0.5; matched = true; break;
         }
-        if (!matched) throw std::runtime_error("Sloped/internal water wall is not representable by server zones");
+        if (!matched) throw UnsupportedWaterPrism("Sloped/internal water wall is not representable by server zones");
     }
     for (const auto& [e,n] : edges) {
         const auto a = points.at(e.first), b = points.at(e.second);
         const double expected = std::hypot(b.x-a.x,b.y-a.y)*(high-low);
-        if (std::abs(wallArea[e]-expected) > std::max(0.1,expected*0.000001)) throw std::runtime_error("Water boundary wall coverage mismatch");
+        if (std::abs(wallArea[e]-expected) > std::max(0.1,expected*0.000001)) throw UnsupportedWaterPrism("Water boundary wall coverage mismatch");
     }
     if (hasHoles) {
         result.clear();
@@ -413,10 +443,86 @@ bool waterContains(const WaterGeometry& zone,double x,double y) {
     for (size_t i=0,j=p.size()-1;i<p.size();j=i++) if ((p[i].y>y)!=(p[j].y>y) && x<(p[j].x-p[i].x)*(y-p[i].y)/(p[j].y-p[i].y)+p[i].x) inside=!inside;
     return inside;
 }
-std::vector<WaterGeometry> readWaterGeometry(const std::filesystem::path& map) {
-    const auto zones=effectiveWater(Package::open(map)); std::vector<WaterGeometry> result;
-    for (const auto& zone:zones) { WaterGeometry out; out.low=zone.low; out.high=zone.high; for (const auto p:zone.polygon) out.polygon.push_back({p.x,p.y,p.z}); result.push_back(std::move(out)); }
+static WaterGeometry bspWater(const Package& package,const std::vector<Property>& ps) {
+    const auto brush=property(ps,"Brush");if(!brush || brush->kind!=5)throw std::runtime_error("Water volume has no usable brush reference");
+    Reader ref{brush->value};WaterGeometry out;auto faces=modelFaces(package,ref.compact(),&out);const auto matrix=transform(ps);
+    if(out.nodes.empty())throw std::runtime_error("Water brush has no BSP nodes");
+    for(auto& face:faces)for(auto& p:face)p=matrix.apply(p);
+    const auto box=bounds(faces);out.low=box.low.z;out.high=box.high.z;out.bounds={box.low.x,box.low.y,box.high.x,box.high.y};
+    const auto origin=matrix.apply({},true);
+    auto column=[&](WaterPoint p){auto q=matrix.apply(p,true);return WaterPoint{q.x-origin.x,q.y-origin.y,q.z-origin.z};};
+    const auto a=column({1,0,0}),b=column({0,1,0}),c=column({0,0,1});
+    const auto cross=[](WaterPoint p,WaterPoint q){return WaterPoint{p.y*q.z-p.z*q.y,p.z*q.x-p.x*q.z,p.x*q.y-p.y*q.x};};
+    const auto u=cross(b,c),v=cross(c,a),w=cross(a,b);const double determinant=a.x*u.x+a.y*u.y+a.z*u.z;
+    if(!std::isfinite(determinant) || determinant==0)throw std::runtime_error("Singular water BSP transform");
+    for(auto& node:out.nodes) {
+        const auto n=node.plane.normal;
+        collision::Point normal{(u.x*n.x+v.x*n.y+w.x*n.z)/determinant,(u.y*n.x+v.y*n.y+w.y*n.z)/determinant,(u.z*n.x+v.z*n.y+w.z*n.z)/determinant};
+        const double length=std::sqrt(normal.x*normal.x+normal.y*normal.y+normal.z*normal.z);
+        const double distance=node.plane.distance+normal.x*origin.x+normal.y*origin.y+normal.z*origin.z;
+        if(!std::isfinite(distance) || !std::isfinite(length) || length==0)throw std::runtime_error("Invalid transformed water BSP plane");
+        node.plane={{normal.x/length,normal.y/length,normal.z/length},distance/length};
+    }
+    return out;
+}
+static bool bspWaterContains(const WaterGeometry& zone,double x,double y,double z) {
+    bool outside=zone.rootOutside;int32_t index=0;size_t visited=0;
+    while(index>=0) {
+        if(size_t(index)>=zone.nodes.size() || ++visited>zone.nodes.size())throw std::runtime_error("Invalid water BSP traversal");
+        const auto& node=zone.nodes[size_t(index)];const auto& p=node.plane;
+        const bool front=p.normal.x*x+p.normal.y*y+p.normal.z*z>p.distance;
+        if(node.solid)outside=front;
+        index=node.children[front?1:0];
+    }
+    return !outside;
+}
+static std::vector<WaterGeometry> nativeWater(const Package& package) {
+    std::vector<WaterGeometry> result;
+    for(const auto i:collision::liveActors(package)) {
+        const auto type=package.className(i);const auto ps=package.properties(i);
+        if(const auto deleted=property(ps,"bDeleteMe");deleted && deleted->boolean)continue;
+        const bool wet=isWater(type,ps);
+        if(!wet && type.find("PhysicsVolume")==std::string::npos && type.find("AirVolume")==std::string::npos && type.find("WaterVolume")==std::string::npos)continue;
+        if(!wet && !property(ps,"Brush"))continue;
+        try {
+            const auto faces=waterFaces(package,ps);
+            try {
+                for(const auto& zone:prism(faces,package.exports[i].name,package.exports[i].name,true)) {
+                    WaterGeometry out;out.low=zone.low;out.high=zone.high;out.priority=priority(ps,type);out.wet=wet;
+                    for(const auto p:zone.polygon)out.polygon.push_back({p.x,p.y,p.z});result.push_back(std::move(out));
+                }
+            } catch(const UnsupportedWaterPrism&) {
+                auto out=bspWater(package,ps);out.priority=priority(ps,type);out.wet=wet;result.push_back(std::move(out));
+            }
+        } catch(const std::exception& error) {throw std::runtime_error(package.exports[i].name+" ("+type+"): "+error.what());}
+    }
     return result;
+}
+bool waterAt(const std::vector<WaterGeometry>& zones,double x,double y,double z) {
+    bool wet=false,dry=false,unknown=false;int wetRank=INT_MIN,dryRank=INT_MIN;
+    for(const auto& zone:zones) {
+        if(z<zone.low || z>zone.high)continue;
+        if(zone.nodes.empty()) {if(!waterContains(zone,x,y))continue;}
+        else {
+            if(x<zone.bounds.minX || x>zone.bounds.maxX || y<zone.bounds.minY || y>zone.bounds.maxY)continue;
+            if(!bspWaterContains(zone,x,y,z))continue;
+        }
+        unknown|=!zone.priority;
+        if(zone.wet){wet=true;wetRank=std::max(wetRank,zone.priority.value_or(0));}
+        else {dry=true;dryRank=std::max(dryRank,zone.priority.value_or(0));}
+    }
+    if(wet && dry && (unknown || wetRank==dryRank))throw std::runtime_error("Overlapping water/dry volumes have ambiguous priority at sampled floor");
+    return wet && (!dry || wetRank>dryRank);
+}
+std::vector<WaterGeometry> readWaterGeometry(const std::filesystem::path& map) {
+    const auto package=Package::open(map);
+    try {
+        const auto zones=effectiveWater(package);std::vector<WaterGeometry> result;
+        for(const auto& zone:zones){WaterGeometry out;out.low=zone.low;out.high=zone.high;for(const auto p:zone.polygon)out.polygon.push_back({p.x,p.y,p.z});result.push_back(std::move(out));}
+        return result;
+    } catch(const UnsupportedWaterPrism&) {
+        return nativeWater(package);
+    }
 }
 
 int verifyWaterCore() {

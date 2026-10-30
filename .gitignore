@@ -35,3 +35,5 @@ Thumbs.db
 Desktop.ini
 
 /_tests/
+
+/isolated-client-*/
