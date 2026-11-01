@@ -12,9 +12,12 @@ struct Point { double x=0,y=0,z=0; Point operator-(Point b) const { return {x-b.
 struct Triangle { Point a,b,c,normal; unsigned char kind=0; uint32_t object=0; bool closed=false; };
 struct Bounds { double minX=0,minY=0,maxX=0,maxY=0; };
 struct Cylinder { Point location;double radius=0,halfHeight=0;Bounds bounds;uint32_t object=0; };
-struct BspNode { Point normal;double distance=0;int32_t children[2]{-1,-1};uint8_t zones[2]{}; };
-struct WorldBsp { std::vector<BspNode> nodes;std::vector<bool> terrainZones; };
+struct BspNode { Point normal;double distance=0;int32_t children[2]{-1,-1};uint8_t zones[2]{};bool solid=false; };
+struct WorldBsp { std::vector<BspNode> nodes;std::vector<bool> terrainZones;std::vector<uint32_t> zoneActors;bool rootOutside=true; };
 bool terrainZone(const WorldBsp& world,Point point);
+bool bspEmpty(const WorldBsp& world,Point point);
+struct BspInterval { double low=0,high=1;uint8_t zone=0;bool outside=true; };
+std::vector<BspInterval> bspRegions(const WorldBsp& world,Point from,Point to);
 bool cylinderHits(const Cylinder& cylinder,const Bounds& area);
 struct Scene {
     WorldBsp world;
@@ -24,6 +27,7 @@ struct Scene {
     std::vector<std::string> notes;
     std::vector<Triangle> triangles;
     std::vector<Point> seeds;
+    std::vector<Point> zoneSeeds;
     size_t terrain=0,bsp=0,meshes=0,volumes=0,dynamic=0;
     std::vector<std::string> errors;
 };

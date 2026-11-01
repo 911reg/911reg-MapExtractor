@@ -4,6 +4,7 @@
 #include "map_selection.h"
 #include "export_readme.h"
 #include "water.h"
+#include "air_clearance.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -52,7 +53,9 @@ struct Geo {
     std::vector<collision::Cylinder> cylinders;
     std::map<size_t,std::vector<uint32_t>> cylinderIndex;
     std::vector<V> seeds;
+    std::vector<V> zoneSeeds;
     bool boundaryOnly=false;
+    bool airBounded=false;
     std::atomic<size_t> rejectedHeights{0};
     std::map<std::pair<int,int>,Cell> halo;
     std::array<std::vector<uint32_t>, 65536> index;
@@ -476,6 +479,8 @@ void preserveFloors(Geo& geo) {
         std::sort(cell.begin(),cell.end(),[](const Layer& a,const Layer& b) { return a.z>b.z; });
 }
 
+#include "air_reachability.inl"
+
 void keepReached(Geo& geo) {
     for(auto& block:geo.blocks)if(block)for(auto& cell:*block) {
         std::sort(cell.begin(),cell.end(),[](const Layer& a,const Layer& b){return a.floor<b.floor;});
@@ -517,43 +522,7 @@ void keepReached(Geo& geo) {
             if(index>=0)visit(nx,ny,index);
         }
     }
-    size_t airFloors=0,deniedFloors=0;
-    auto visitAir=[&](int x,int y,int index) {
-        auto& layer=(*at(x,y))[index];
-        if(layer.air || !layer.airAllowed)return;
-        layer.air=true;
-        if(!layer.reach){layer.reach=true;++airFloors;}
-        stack.push_back({x,y,index});
-    };
-    if(airReachability)for(int x=0;x<2048;++x)for(int y=0;y<2048;++y) {
-        auto* cell=at(x,y);if(!cell || cell->empty())continue;
-        bool openSide=false;
-        for(int direction=0;direction<4;++direction) {
-            const int nx=x+dx[direction],ny=y+dy[direction];
-            if(nx<0 || ny<0 || nx>=2048 || ny>=2048)continue;
-            const auto* neighbor=at(nx,ny);
-            if(neighbor && !neighbor->empty())continue;
-            if(!geo.occupied.test((size_t(nx/8)*256+ny/8)*64+size_t(nx%8)*8+ny%8)){openSide=true;break;}
-        }
-        for(int i=0;i<int(cell->size());++i) {
-            const auto& layer=(*cell)[i];
-            if(!layer.airAllowed && !layer.reach)++deniedFloors;
-            if(layer.reach || layer.ceiling==65535 || openSide)visitAir(x,y,i);
-        }
-    }
-    while(!stack.empty()) {
-        const auto node=stack.back();stack.pop_back();
-        const auto& layer=(*at(node.x,node.y))[node.index];
-        for(int direction=0;direction<4;++direction) {
-            const int nx=node.x+dx[direction],ny=node.y+dy[direction];
-            auto* neighbor=at(nx,ny);if(!neighbor)continue;
-            for(int i=0;i<int(neighbor->size());++i) {
-                const auto& other=(*neighbor)[i];
-                if(!other.air && other.airAllowed && std::min(layer.ceiling,other.ceiling)-std::max(layer.floor,other.floor)>=headroom)visitAir(nx,ny,i);
-            }
-        }
-    }
-    std::cerr<<"STAGE air access | "<<airFloors<<" additional floors, "<<deniedFloors<<" outdoor underground floors excluded\n";
+    if(airReachability){AirReachability air(geo);air.run();}
     for(auto& block:geo.blocks)if(block) {
         bool used=false;
         for(auto& cell:*block) {
@@ -792,6 +761,7 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
     std::string facts;
     if (fixture) geo->triangles = loadObj(source);
     else {
+        geo->airBounded=true;
         std::cerr << "MAP " << output::utf8(source.filename()) << " | native client collision\n";
         const auto loaded=collisionCache ? collisionCache->read(source) : std::make_shared<const collision::Scene>(collision::read(source));
         const auto& scene=*loaded;
@@ -812,6 +782,7 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
         geo->triangles = scene.triangles;
         geo->cylinders = scene.cylinders;
         geo->seeds = scene.seeds;
+        geo->zoneSeeds = scene.zoneSeeds;
         geo->world = scene.world;
     }
     dropEnclosure(geo->triangles, geo->ox, geo->oy);
@@ -861,7 +832,7 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
         + "Air reachability: " + (airReachability ? "enabled\n" : "disabled (--walking-only)\n")
         + "Native UE2 client collision; dynamic doors are exported separately. Test movement before replacing a live server.\n"
         + "Settings: cell 16, height unit 8, client surface offsets by default (raw surfaces only with --world-heights), truncate toward zero, headroom 46, mesh surface step 16.32, steep climb 3.125, walk angle 45.573.\n"
-        + "Lower floors are retained when connected to outdoor air through adjacent collision spans with at least 46 units of shared headroom, or by a movement route from an exposed surface or PlayerStart. Air access does not grant walking links or model a wyvern-sized body. Sealed unseeded lower spans remain excluded. Movement uses unquantized surface rise and the lowest compatible neighbour span. Terrain collision is clipped to the TerrainInfo XY footprint. Missing edge vertices use matching neighbour world heights; unavailable samples extend the local edge flat with an informational message. Adjacent region collision validates movement seams; unavailable neighbours stay closed. Fully open single-floor blocks may be compacted with height changes bounded to 24 units; --exact-heights disables this. Empty cells are closed at -16352.\n"
+        + "Lower floors are retained when connected to outdoor air through adjacent collision spans with at least 46 units of shared headroom, or by a movement route from an exposed surface or PlayerStart. Air uses an upright cylinder (radius 8.2, half-height 22.5, margin 0.01), active BSP-bound ZoneInfo/PlayerStart positions and exposed sky. It stays within BSP zones, validates continuous horizontal sweeps and vertical clearance, and does not grant walking links. Empty columns are not seeds. Unsupported body coverage at native region edges stays closed for air additions. This is a conservative player-body model, not a wyvern hull. Sealed unseeded lower spans remain excluded. Movement uses unquantized surface rise and the lowest compatible neighbour span. Terrain collision is clipped to the TerrainInfo XY footprint. Missing edge vertices use matching neighbour world heights; unavailable samples extend the local edge flat with an informational message. Adjacent region collision validates movement seams; unavailable neighbours stay closed. Fully open single-floor blocks may be compacted with height changes bounded to 24 units; --exact-heights disables this. Empty cells are closed at -16352.\n"
         + "Formats: " + (geodataFormat == "l2j" ? "L2J/*.l2j" : geodataFormat == "l2off" ? "L2OFF/*_conv.dat" : "L2J/*.l2j and L2OFF/*_conv.dat") + ". Four cardinal directions. No live client/server files modified.\n");
     std::cerr << (pathnodesOnly ? "Pathnodes complete: " : "Geodata complete: ") << count << " layers; " << (geodataFormat == "l2j" ? "L2J" : geodataFormat == "l2off" ? "L2OFF" : "L2J, L2OFF") << ".\n";
     return 0;
@@ -993,6 +964,24 @@ int verifyGeodata() {
     connect(*geo, 2);
     preserveFloors(*geo);
     auto require = [](bool ok) { if (!ok) throw std::runtime_error("Geodata geometry check failed"); };
+    auto shape=[](V a,V b,V c){return Triangle{a,b,c,cross(b-a,c-a)};};
+    const V sweepFrom{0,0,50},sweepTo{32,0,50};
+    auto door=[&](double halfGap) {
+        std::vector<air::Range> blocked;
+        for(const double side:{-1.,1.}) {
+            const V a{16,side*halfGap,0},b{16,side*100,0},c{16,side*100,100},d{16,side*halfGap,100};
+            for(const auto t:{shape(a,b,c),shape(a,c,d)})if(const auto range=air::triangleRange(t,sweepFrom,sweepTo))blocked.push_back({range->first-air::halfHeight-air::skin,range->second+air::halfHeight+air::skin});
+        }
+        return !air::freeRanges(49.,51.,blocked).empty();
+    };
+    require(!door(8.1) && door(8.3));
+    require(!air::triangleRange(shape({8,8,0},{9,8,0},{8,9,0}),{0,0,0},{0,0,0}));
+    const auto barrier=shape({16,-2,45},{16,2,45},{16,0,55});
+    require(!air::triangleRange(barrier,sweepFrom,sweepFrom) && !air::triangleRange(barrier,sweepTo,sweepTo) && air::triangleRange(barrier,sweepFrom,sweepTo).has_value());
+    const auto slope=air::triangleRange(shape({-100,-100,-100},{100,-100,100},{0,100,0}),{0,0,0},{0,0,0});
+    require(slope && std::abs(slope->first+air::radius)<1e-6 && std::abs(slope->second-air::radius)<1e-6);
+    auto verticalGap=[&](double height){return !air::freeRanges(0.,height,{{-air::halfHeight-air::skin,air::halfHeight+air::skin},{height-air::halfHeight-air::skin,height+air::halfHeight+air::skin}}).empty();};
+    require(verticalGap(45.1) && !verticalGap(44.9));
     require(geo->cell(2, 2).size() == 2 && geo->cell(2, 2)[0].z == 128 && (geo->cell(2, 2)[0].flags & 1) != 0);
     require(geo->cell(5, 2).size() == 2 && geo->cell(5, 2)[0].z == 128 && geo->cell(5, 2)[1].z == 0 && (geo->cell(5, 2)[1].flags & 2) == 0);
     require(geo->cell(6, 2).size() == 2 && (geo->cell(6, 2)[1].flags & 2) != 0);
@@ -1031,6 +1020,7 @@ int verifyGeodata() {
     auto covered=std::make_unique<Geo>();
     collision::BspNode zone;zone.normal={1,0,0};zone.distance=64;zone.zones[1]=1;
     covered->world.nodes.push_back(zone);covered->world.terrainZones={false,true};
+    covered->zoneSeeds.push_back({40,40,200});
     auto face=[&](V a,V b,V c,unsigned char kind){covered->triangles.push_back({a,b,c,cross(b-a,c-a),kind});};
     face({0,0,128},{128,0,128},{128,128,128},0);
     face({0,0,128},{128,128,128},{0,128,128},0);
@@ -1048,6 +1038,21 @@ int verifyGeodata() {
     Layer inside;inside.z=200;inside.surface=200;inside.floor=200;inside.ceiling=350;inside.airAllowed=false;
     (*seeded->blocks[0])[0]={inside,roof};seeded->seeds.push_back({8,8,220});
     connect(*seeded,2);keepReached(*seeded);require(seeded->cell(0,0).size()==2);
+    auto chamber=std::make_unique<Geo>();
+    auto quad=[&](V a,V b,V c,V d,unsigned char kind){chamber->triangles.push_back({a,b,c,cross(b-a,c-a),kind});chamber->triangles.push_back({a,c,d,cross(c-a,d-a),kind});};
+    quad({0,0,512},{384,0,512},{384,384,512},{0,384,512},1);
+    quad({64,64,0},{192,64,0},{192,192,0},{64,192,0},0);
+    quad({64,64,128},{192,64,128},{192,192,128},{64,192,128},0);
+    quad({64,64,0},{192,64,0},{192,64,128},{64,64,128},0);
+    quad({192,64,0},{192,192,0},{192,192,128},{192,64,128},0);
+    quad({192,192,0},{64,192,0},{64,192,128},{192,192,128},0);
+    quad({64,192,0},{64,64,0},{64,64,128},{64,192,128},0);
+    quad({96,96,48},{144,96,48},{144,144,48},{96,144,48},0);
+    chamber->zoneSeeds.push_back({88,88,48});
+    buildIndex(*chamber);rasterize(*chamber,2);connect(*chamber,2);keepReached(*chamber);
+    const auto& ledge=chamber->cell(7,7);
+    require(std::any_of(ledge.begin(),ledge.end(),[](const auto& layer){return layer.z==48;}));
+    require(std::none_of(ledge.begin(),ledge.end(),[](const auto& layer){return layer.z==128;}));
     std::cout << "Geodata checks passed: world heights, preserved floors, headroom, steep slopes, walls, NSWE, closed boundary, signed heights, air-accessible ledges, sealed spans and PlayerStart interiors\n";
     return 0;
 }

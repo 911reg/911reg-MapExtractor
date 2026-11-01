@@ -21,6 +21,7 @@
 #include <thread>
 #include <mutex>
 #include <cwchar>
+#include <cmath>
 #include <windows.h>
 
 namespace fs = std::filesystem;
@@ -255,6 +256,13 @@ static int run(int argc, wchar_t** argv) {
         if (option == L"--exact-heights") { extractor::compactGeodata=false; continue; }
         if (option == L"--no-pathnodes") { extractor::emitPathnodes=false; continue; }
         if (option == L"--walking-only") { extractor::airReachability=false; continue; }
+        if(option==L"--trace-air") {
+            if(++i>=argc || extractor::airTracePoints.size()>=16)throw std::runtime_error("--trace-air requires X,Y,Z; maximum 16 points");
+            std::istringstream value(pathText(fs::path(argv[i])));extractor::collision::Point point;char a=0,b=0;
+            if(!(value>>point.x>>a>>point.y>>b>>point.z) || a!=',' || b!=',' || !value.eof())throw std::runtime_error("--trace-air requires X,Y,Z");
+            for(const auto n:{point.x,point.y,point.z})if(!std::isfinite(n) || std::abs(n)>16777216)throw std::runtime_error("Invalid air trace coordinate");
+            extractor::airTracePoints.push_back(point);continue;
+        }
         if (option == L"--world-heights") { extractor::retailHeightOffsets=false; continue; }
         if (option == L"--retail-heights") { extractor::retailHeightOffsets=true; continue; }
         if (option == L"--classic") { classic = true; continue; }

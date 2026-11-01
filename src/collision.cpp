@@ -187,10 +187,10 @@ std::vector<Triangle> model(const Object& object,WorldBsp* world=nullptr) {
     struct Node { int first=0,surf=0; unsigned vertices=0; Point normal; };
     std::vector<Node> nodes; n=count(r,64,2000000);
     for (size_t i=0;i<n;++i) {
-        Node node; BspNode branch; node.normal=point(r);branch.normal=node.normal;branch.distance=scalar(r);r.skip(9);node.first=r.compact();node.surf=r.compact();
+        Node node; BspNode branch; node.normal=point(r);branch.normal=node.normal;branch.distance=scalar(r);r.skip(8);const auto nodeFlags=r.byte();node.first=r.compact();node.surf=r.compact();
         branch.children[0]=r.compact();branch.children[1]=r.compact();
         for(int j=0;j<3;++j)r.compact();r.skip(32);branch.zones[0]=r.byte();branch.zones[1]=r.byte();node.vertices=r.byte();r.skip(20);nodes.push_back(node);
-        if(world)world->nodes.push_back(branch);
+        branch.solid=node.vertices && !(nodeFlags&0x21);if(world)world->nodes.push_back(branch);
     }
     std::vector<unsigned> flags; n=count(r,20);
     for (size_t i=0;i<n;++i) { r.compact(); flags.push_back(r.word()); for (int j=0;j<6;++j) r.compact(); r.skip(20+(p.version>=123 && p.licensee>=23 ? 4 : 0)); }
@@ -201,8 +201,12 @@ std::vector<Triangle> model(const Object& object,WorldBsp* world=nullptr) {
         for(size_t i=0;i<zones;++i) {
             const auto actor=r.compact();r.skip(20);
             if(actor<0 || size_t(actor)>p.exports.size())throw std::runtime_error("Invalid world BSP zone actor");
-            if(actor)world->terrainZones[i]=flag(p.properties(size_t(actor-1)),"bTerrainZone",false);
+            if(actor){world->terrainZones[i]=flag(p.properties(size_t(actor-1)),"bTerrainZone",false);world->zoneActors.push_back(uint32_t(actor));}
         }
+        r.compact();r.skip(count(r,25)*25);r.skip(count(r,4)*4);
+        const auto leaves=count(r,11);for(size_t i=0;i<leaves;++i){r.compact();r.compact();r.compact();r.skip(8);}
+        const auto lights=count(r);for(size_t i=0;i<lights;++i)r.compact();
+        const auto outside=r.word();if(outside>1)throw std::runtime_error("Invalid world BSP root state");world->rootOutside=outside!=0;
         for(const auto& branch:world->nodes) {
             const auto& v=branch.normal;
             if(v.x*v.x+v.y*v.y+v.z*v.z<1e-12)throw std::runtime_error("Invalid world BSP plane");
@@ -575,8 +579,6 @@ int inspect(const std::filesystem::path& path) {
 Scene readScene(Files& files,const std::filesystem::path& path,TerrainCache* cache=nullptr) {
     auto p=files.open(path); Scene scene;
     std::set<size_t> actors; const auto world=worldModel(*p,actors);
-    bool hasTerrainZones=false;
-    for(auto i:actors)if(p->className(i)=="Engine.ZoneInfo" && flag(p->properties(i),"bTerrainZone",false))hasTerrainZones=true;
     std::vector<TerrainData> terrains;
     try {
         terrains=cachedTerrains(files,path,p,cache);
@@ -617,7 +619,7 @@ Scene readScene(Files& files,const std::filesystem::path& path,TerrainCache* cac
         const auto type=p->className(i);
         try {
             if (type=="Engine.Model" && int(i+1)==world) {
-                const auto faces=model({p,i},hasTerrainZones ? &scene.world : nullptr); append(faces,nullptr,3); scene.bsp+=faces.size(); continue;
+                const auto faces=model({p,i},&scene.world); append(faces,nullptr,3); scene.bsp+=faces.size(); continue;
             }
             if (!actors.contains(i)) continue;
             if (type=="Engine.PlayerStart") {
@@ -676,6 +678,13 @@ Scene readScene(Files& files,const std::filesystem::path& path,TerrainCache* cac
             scene.warnings.push_back("Ignored mesh "+p->exports[i].name+" ("+type+"): "+error.what()+". This actor contributes no collision.");
         } catch (const std::exception& error) { scene.errors.push_back(p->exports[i].name+" ("+type+"): "+error.what()); }
     }
+    auto zoneActors=scene.world.zoneActors;std::sort(zoneActors.begin(),zoneActors.end());zoneActors.erase(std::unique(zoneActors.begin(),zoneActors.end()),zoneActors.end());
+    for(const auto ref:zoneActors)if(ref && actors.contains(size_t(ref-1))) {
+        const auto type=p->className(size_t(ref-1));
+        if(type=="Engine.LevelInfo" || type.find("SkyZoneInfo")!=std::string::npos || type=="Engine.L2SkyLevelZoneInfo")continue;
+        const auto ps=p->properties(size_t(ref-1));
+        if(!flag(ps,"bDeleteMe",false) && prop(ps,"Location"))scene.zoneSeeds.push_back(vector(ps,"Location"));
+    }
     scene.terrain=scene.bsp=scene.meshes=scene.volumes=0;
     for(const auto& face:scene.triangles) {
         if(face.kind==1)++scene.terrain;else if(face.kind==2)++scene.volumes;else if(face.kind==3)++scene.bsp;else ++scene.meshes;
@@ -696,6 +705,42 @@ bool terrainZone(const WorldBsp& world,Point location) {
         index=child;
     }
     return false;
+}
+bool bspEmpty(const WorldBsp& world,Point location) {
+    bool outside=world.rootOutside;int32_t index=world.nodes.empty() ? -1 : 0;size_t visited=0;
+    while(index>=0) {
+        if(size_t(index)>=world.nodes.size() || ++visited>world.nodes.size())throw std::runtime_error("Invalid world BSP traversal");
+        const auto& node=world.nodes[size_t(index)];const auto& v=node.normal;
+        const bool front=v.x*location.x+v.y*location.y+v.z*location.z>=node.distance;
+        if(node.solid)outside=front;
+        index=node.children[front ? 1 : 0];
+    }
+    return outside;
+}
+std::vector<BspInterval> bspRegions(const WorldBsp& world,Point from,Point to) {
+    struct Part { int32_t node;BspInterval span; };
+    std::vector<Part> pending{{world.nodes.empty() ? -1 : 0,{0,1,0,world.rootOutside}}};
+    std::vector<BspInterval> result;size_t visited=0;
+    while(!pending.empty()) {
+        const auto part=pending.back();pending.pop_back();
+        if(part.node==-1){result.push_back(part.span);continue;}
+        if(part.node<0 || size_t(part.node)>=world.nodes.size() || ++visited>world.nodes.size()*4+1)throw std::runtime_error("Invalid BSP segment traversal");
+        const auto& node=world.nodes[size_t(part.node)];const auto& n=node.normal;
+        const double start=n.x*from.x+n.y*from.y+n.z*from.z-node.distance;
+        const double delta=n.x*(to.x-from.x)+n.y*(to.y-from.y)+n.z*(to.z-from.z);
+        auto branch=[&](double low,double high,int side){auto span=part.span;span.low=low;span.high=high;span.zone=node.zones[side];if(node.solid)span.outside=side!=0;pending.push_back({node.children[side],span});};
+        const double split=std::abs(delta)>1e-15 ? -start/delta : -1.;
+        if(split>part.span.low && split<part.span.high) {
+            branch(part.span.low,split,delta>0 ? 0 : 1);branch(split,part.span.high,delta>0 ? 1 : 0);
+        } else branch(part.span.low,part.span.high,start+delta*(part.span.low+part.span.high)/2.>=0 ? 1 : 0);
+    }
+    std::sort(result.begin(),result.end(),[](const auto& a,const auto& b){return a.low<b.low;});
+    std::vector<BspInterval> merged;
+    for(const auto& span:result) {
+        if(!merged.empty() && merged.back().zone==span.zone && merged.back().outside==span.outside && std::abs(merged.back().high-span.low)<1e-10)merged.back().high=span.high;
+        else merged.push_back(span);
+    }
+    return merged;
 }
 struct Cache::Impl {
     struct Entry { std::shared_ptr<const Scene> scene;size_t bytes;uint64_t used; };
@@ -726,7 +771,7 @@ std::shared_ptr<const Scene> Cache::read(const std::filesystem::path& path) {
         state.files=std::make_unique<Files>(key,std::clamp<size_t>(state.budget/2,16ull*1024*1024,512ull*1024*1024));state.terrains=TerrainCache{};state.folder=key.parent_path();
     }
     auto scene=std::make_shared<const Scene>(readScene(*state.files,key,&state.terrains));
-    const size_t cost=sizeof(Scene)+scene->triangles.capacity()*sizeof(Triangle)+scene->cylinders.capacity()*sizeof(Cylinder)+scene->seeds.capacity()*sizeof(Point)+scene->bounds.capacity()*sizeof(Bounds)+scene->world.nodes.capacity()*sizeof(BspNode)+scene->world.terrainZones.capacity()/8;
+    const size_t cost=sizeof(Scene)+scene->triangles.capacity()*sizeof(Triangle)+scene->cylinders.capacity()*sizeof(Cylinder)+scene->seeds.capacity()*sizeof(Point)+scene->zoneSeeds.capacity()*sizeof(Point)+scene->bounds.capacity()*sizeof(Bounds)+scene->world.nodes.capacity()*sizeof(BspNode)+scene->world.zoneActors.capacity()*sizeof(uint32_t)+scene->world.terrainZones.capacity()/8;
     if(scene->errors.empty() && cost<=state.budget) {
         while(!state.entries.empty() && state.bytes>state.budget-cost) {
             const auto oldest=std::min_element(state.entries.begin(),state.entries.end(),[](const auto& a,const auto& b){return a.second.used<b.second.used;});
@@ -796,6 +841,10 @@ int verify(const std::filesystem::path& path) {
     world.nodes.push_back(branch);world.terrainZones={false,true};
     need(!terrainZone(world,{32,0,0}) && terrainZone(world,{64,0,0}) && terrainZone(world,{96,0,0}));
     need(!terrainZone(WorldBsp{},{}));
+    world.nodes[0].solid=true;world.rootOutside=false;
+    need(!bspEmpty(world,{32,0,0}) && bspEmpty(world,{96,0,0}));
+    const auto regions=bspRegions(world,{32,0,0},{96,0,0});
+    need(regions.size()==2 && !regions[0].outside && regions[1].outside && regions[0].high==0.5 && regions[1].low==0.5 && regions[1].zone==1);
     world.nodes[0].children[1]=0;rejects([&]{terrainZone(world,{96,0,0});});
     std::cout << "Native collision fixtures passed: BSP flags, stored collision faces, material flags, simple-model precedence, holes, transforms and bounds\n";
     return 0;
