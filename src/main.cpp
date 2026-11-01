@@ -254,6 +254,7 @@ static int run(int argc, wchar_t** argv) {
         if (option == L"--no-collision-cache") { extractor::useCollisionCache=false; continue; }
         if (option == L"--exact-heights") { extractor::compactGeodata=false; continue; }
         if (option == L"--no-pathnodes") { extractor::emitPathnodes=false; continue; }
+        if (option == L"--walking-only") { extractor::airReachability=false; continue; }
         if (option == L"--world-heights") { extractor::retailHeightOffsets=false; continue; }
         if (option == L"--retail-heights") { extractor::retailHeightOffsets=true; continue; }
         if (option == L"--classic") { classic = true; continue; }

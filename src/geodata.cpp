@@ -40,12 +40,13 @@ struct Layer {
     unsigned flags = 0;
     float surface = 0;
     int floor = 0, ceiling = 65535;
-    bool steep = false, terrain = false, reach = false, wet = false;
+    bool steep = false, terrain = false, reach = false, wet = false, air = false, airAllowed = true;
 };
 using Cell = std::vector<Layer>;
 using Block = std::array<Cell, 64>;
 
 struct Geo {
+    collision::WorldBsp world;
     double ox = 0, oy = 0;
     std::vector<Triangle> triangles;
     std::vector<collision::Cylinder> cylinders;
@@ -356,6 +357,8 @@ void rasterize(Geo& geo, unsigned workers) {
                 else spans.push_back({sample.smin, sample.smax});
             }
             auto& cell = (*block)[size_t(x) * 8 + y];
+            float terrainHeight=-std::numeric_limits<float>::infinity();
+            for(const auto& sample:samples)if(sample.kind==1 && sample.center && sample.surface && !sample.spanOnly)terrainHeight=std::max(terrainHeight,sample.z);
             for (size_t i = 0; i < spans.size(); ++i) {
                 const int ceiling = i + 1 < spans.size() ? spans[i + 1].smin : 65535;
                 if (i + 1 < spans.size() && spans[i + 1].smin - spans[i].smax < headroom) continue;
@@ -386,6 +389,7 @@ void rasterize(Geo& geo, unsigned workers) {
                 layer.ceiling = ceiling;
                 layer.steep = top && top->steep;
                 layer.terrain = top && top->kind == 1;
+                if(layer.floor+headroom<terrainHeight && collision::terrainZone(geo.world,{double(x0)+8,double(y0)+8,double(layer.floor)+headroom/2.}))layer.airAllowed=false;
                 cell.push_back(layer);
             }
             if (cell.size() > 125) throw std::runtime_error("Cell exceeds 125 L2J layers");
@@ -473,101 +477,91 @@ void preserveFloors(Geo& geo) {
 }
 
 void keepReached(Geo& geo) {
-    for (auto& block:geo.blocks) if (block) for (auto& cell:*block) {
-        std::sort(cell.begin(),cell.end(),[](const Layer& a,const Layer& b) { return a.floor<b.floor; });
-        for (auto& layer:cell) layer.reach=false;
+    for(auto& block:geo.blocks)if(block)for(auto& cell:*block) {
+        std::sort(cell.begin(),cell.end(),[](const Layer& a,const Layer& b){return a.floor<b.floor;});
+        for(auto& layer:cell){layer.reach=false;layer.air=false;}
     }
-    struct Node { int x, y, index; };
+    struct Node { int x,y,index; };
     std::vector<Node> stack;
-    auto at = [&](int x, int y) -> Cell* {
-        if (x < 0 || y < 0 || x >= 2048 || y >= 2048) return nullptr;
-        auto& block = geo.blocks[size_t(x / 8) * 256 + size_t(y / 8)];
-        return block ? &(*block)[size_t(x % 8) * 8 + size_t(y % 8)] : nullptr;
+    auto at=[&](int x,int y)->Cell* {
+        if(x<0 || y<0 || x>=2048 || y>=2048)return nullptr;
+        auto& block=geo.blocks[size_t(x/8)*256+y/8];
+        return block ? &(*block)[size_t(x%8)*8+y%8] : nullptr;
     };
-    auto visit = [&](int x, int y, int index) {
-        auto* cell = at(x, y);
-        if (!cell || index < 0 || index >= int(cell->size()) || (*cell)[index].reach) return;
-        (*cell)[index].reach = true;
-        stack.push_back({x, y, index});
+    auto visit=[&](int x,int y,int index) {
+        auto* cell=at(x,y);
+        if(!cell || index<0 || index>=int(cell->size()) || (*cell)[index].reach)return;
+        (*cell)[index].reach=true;stack.push_back({x,y,index});
     };
-    for (int x = 0; x < 2048; ++x) for (int y = 0; y < 2048; ++y) {
-        auto* cell = at(x, y);
-        if (cell && !cell->empty() && cell->back().ceiling == 65535) visit(x, y, int(cell->size()) - 1);
+    constexpr int dx[]{1,-1,0,0},dy[]{0,0,1,-1};
+    constexpr unsigned flags[]{1,2,4,8};
+    for(int x=0;x<2048;++x)for(int y=0;y<2048;++y) {
+        auto* cell=at(x,y);
+        if(cell && !cell->empty())visit(x,y,int(cell->size())-1);
     }
-    constexpr int dx[]{1, -1, 0, 0}, dy[]{0, 0, 1, -1};
-    constexpr unsigned flags[]{1, 2, 4, 8};
-    size_t airFloors = 0;
-    for (int x = 0; x < 2048; ++x) for (int y = 0; y < 2048; ++y) {
-        auto* cell = at(x, y);
-        if (!cell || cell->empty()) continue;
-        for (int direction = 0; direction < 4; ++direction) {
-            const int nx = x + dx[direction], ny = y + dy[direction];
-            if (nx < 0 || ny < 0 || nx >= 2048 || ny >= 2048) continue;
-            const auto* neighbor = at(nx, ny);
-            if (neighbor && !neighbor->empty()) continue;
-            if (geo.occupied.test((size_t(nx / 8) * 256 + ny / 8) * 64 + size_t(nx % 8) * 8 + ny % 8)) continue;
-            for (int i = 0; i < int(cell->size()); ++i) if (!(*cell)[i].reach) {
-                visit(x, y, i);
-                ++airFloors;
+    for(const auto& seed:geo.seeds) {
+        const int x=int(std::floor((seed.x-geo.ox)/16.)),y=int(std::floor((seed.y-geo.oy)/16.));
+        auto* cell=at(x,y);if(!cell)continue;
+        int found=-1;
+        for(int i=0;i<int(cell->size());++i)if((*cell)[i].floor<=int(seed.z))found=i;
+        if(found>=0)visit(x,y,found);
+    }
+    while(!stack.empty()) {
+        const auto node=stack.back();stack.pop_back();
+        const auto& layer=(*at(node.x,node.y))[node.index];
+        for(int direction=0;direction<4;++direction) {
+            if(!(layer.flags&flags[direction]))continue;
+            const int nx=node.x+dx[direction],ny=node.y+dy[direction];
+            auto* neighbor=at(nx,ny);if(!neighbor)continue;
+            const int index=linkedIndex(*neighbor,layer);
+            if(index>=0)visit(nx,ny,index);
+        }
+    }
+    size_t airFloors=0,deniedFloors=0;
+    auto visitAir=[&](int x,int y,int index) {
+        auto& layer=(*at(x,y))[index];
+        if(layer.air || !layer.airAllowed)return;
+        layer.air=true;
+        if(!layer.reach){layer.reach=true;++airFloors;}
+        stack.push_back({x,y,index});
+    };
+    if(airReachability)for(int x=0;x<2048;++x)for(int y=0;y<2048;++y) {
+        auto* cell=at(x,y);if(!cell || cell->empty())continue;
+        bool openSide=false;
+        for(int direction=0;direction<4;++direction) {
+            const int nx=x+dx[direction],ny=y+dy[direction];
+            if(nx<0 || ny<0 || nx>=2048 || ny>=2048)continue;
+            const auto* neighbor=at(nx,ny);
+            if(neighbor && !neighbor->empty())continue;
+            if(!geo.occupied.test((size_t(nx/8)*256+ny/8)*64+size_t(nx%8)*8+ny%8)){openSide=true;break;}
+        }
+        for(int i=0;i<int(cell->size());++i) {
+            const auto& layer=(*cell)[i];
+            if(!layer.airAllowed && !layer.reach)++deniedFloors;
+            if(layer.reach || layer.ceiling==65535 || openSide)visitAir(x,y,i);
+        }
+    }
+    while(!stack.empty()) {
+        const auto node=stack.back();stack.pop_back();
+        const auto& layer=(*at(node.x,node.y))[node.index];
+        for(int direction=0;direction<4;++direction) {
+            const int nx=node.x+dx[direction],ny=node.y+dy[direction];
+            auto* neighbor=at(nx,ny);if(!neighbor)continue;
+            for(int i=0;i<int(neighbor->size());++i) {
+                const auto& other=(*neighbor)[i];
+                if(!other.air && other.airAllowed && std::min(layer.ceiling,other.ceiling)-std::max(layer.floor,other.floor)>=headroom)visitAir(nx,ny,i);
             }
-            break;
         }
     }
-    while (!stack.empty()) {
-        const auto node = stack.back();
-        stack.pop_back();
-        const auto& layer = (*at(node.x, node.y))[node.index];
-        for (int direction = 0; direction < 4; ++direction) {
-            const int nextX = node.x + dx[direction], nextY = node.y + dy[direction];
-            auto* neighbor = at(nextX, nextY);
-            if (!neighbor) continue;
-            for (int i = 0; i < int(neighbor->size()); ++i) {
-                const auto& other = (*neighbor)[i];
-                if (!other.reach && std::min(layer.ceiling, other.ceiling) - std::max(layer.floor, other.floor) >= headroom) {
-                    visit(nextX, nextY, i);
-                    ++airFloors;
-                }
-            }
+    std::cerr<<"STAGE air access | "<<airFloors<<" additional floors, "<<deniedFloors<<" outdoor underground floors excluded\n";
+    for(auto& block:geo.blocks)if(block) {
+        bool used=false;
+        for(auto& cell:*block) {
+            std::erase_if(cell,[](const Layer& layer){return !layer.reach;});
+            std::sort(cell.begin(),cell.end(),[](const Layer& a,const Layer& b){return a.z>b.z;});
+            used|=!cell.empty();
         }
-    }
-    std::cerr << "STAGE air access | " << airFloors << " additional floors connected to outdoor air\n";
-    for (int x = 0; x < 2048; ++x) for (int y = 0; y < 2048; ++y) {
-        auto* cell = at(x, y);
-        if (!cell || cell->empty()) continue;
-        for (int i = 0; i < int(cell->size()); ++i) if ((*cell)[i].reach) stack.push_back({x, y, i});
-        visit(x, y, int(cell->size()) - 1);
-    }
-    for (const auto& seed : geo.seeds) {
-        const int x = int(std::floor((seed.x - geo.ox) / 16.0));
-        const int y = int(std::floor((seed.y - geo.oy) / 16.0));
-        auto* cell = at(x, y);
-        if (!cell) continue;
-        int found = -1;
-        const int height = static_cast<int>(seed.z);
-        for (int i = 0; i < int(cell->size()); ++i) if ((*cell)[i].floor <= height) found = i;
-        if (found >= 0) visit(x, y, found);
-    }
-    while (!stack.empty()) {
-        const auto node = stack.back();
-        stack.pop_back();
-        const auto& layer = (*at(node.x, node.y))[node.index];
-        for (int direction = 0; direction < 4; ++direction) {
-            if (!(layer.flags & flags[direction])) continue;
-            const int nextX = node.x + dx[direction], nextY = node.y + dy[direction];
-            auto* neighbor = at(nextX, nextY);
-            if (!neighbor) continue;
-            const int index = linkedIndex(*neighbor, layer);
-            if (index >= 0) visit(nextX, nextY, index);
-        }
-    }
-    for (auto& block : geo.blocks) if (block) {
-        bool used = false;
-        for (auto& cell : *block) {
-            std::erase_if(cell, [](const Layer& layer) { return !layer.reach; });
-            std::sort(cell.begin(), cell.end(), [](const Layer& a, const Layer& b) { return a.z > b.z; });
-            used |= !cell.empty();
-        }
-        if (!used) block.reset();
+        if(!used)block.reset();
     }
 }
 
@@ -818,6 +812,7 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
         geo->triangles = scene.triangles;
         geo->cylinders = scene.cylinders;
         geo->seeds = scene.seeds;
+        geo->world = scene.world;
     }
     dropEnclosure(geo->triangles, geo->ox, geo->oy);
     std::cerr << "STAGE spatial index | triangles=" << geo->triangles.size() << ", cylinders=" << geo->cylinders.size() << '\n';
@@ -863,6 +858,7 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
     if (emitPathnodes || pathnodesOnly) fs::rename((pathnodesOnly ? output : output/"Pathnodes")/(stem+L".pn.partial"),(pathnodesOnly ? output : output/"Pathnodes")/(stem+L".pn"));
     if (debugFiles) output::save(output / "reports" / (stem + L".txt"),
         "CPU geodata\nSource: " + output::utf8(source.filename()) + "\nLayers: " + std::to_string(count) + "\n" + facts
+        + "Air reachability: " + (airReachability ? "enabled\n" : "disabled (--walking-only)\n")
         + "Native UE2 client collision; dynamic doors are exported separately. Test movement before replacing a live server.\n"
         + "Settings: cell 16, height unit 8, client surface offsets by default (raw surfaces only with --world-heights), truncate toward zero, headroom 46, mesh surface step 16.32, steep climb 3.125, walk angle 45.573.\n"
         + "Lower floors are retained when connected to outdoor air through adjacent collision spans with at least 46 units of shared headroom, or by a movement route from an exposed surface or PlayerStart. Air access does not grant walking links or model a wyvern-sized body. Sealed unseeded lower spans remain excluded. Movement uses unquantized surface rise and the lowest compatible neighbour span. Terrain collision is clipped to the TerrainInfo XY footprint. Missing edge vertices use matching neighbour world heights; unavailable samples extend the local edge flat with an informational message. Adjacent region collision validates movement seams; unavailable neighbours stay closed. Fully open single-floor blocks may be compacted with height changes bounded to 24 units; --exact-heights disables this. Empty cells are closed at -16352.\n"
@@ -1032,6 +1028,26 @@ int verifyGeodata() {
     require((air->cell(0, 0)[0].flags & 1) == 0 && (air->cell(1, 0)[1].flags & 1) == 0);
     require(air->cell(3, 0).size() == 1 && air->cell(4, 0).size() == 1 && air->cell(5, 0).size() == 1);
     require(air->cell(7, 0).size() == 2);
+    auto covered=std::make_unique<Geo>();
+    collision::BspNode zone;zone.normal={1,0,0};zone.distance=64;zone.zones[1]=1;
+    covered->world.nodes.push_back(zone);covered->world.terrainZones={false,true};
+    auto face=[&](V a,V b,V c,unsigned char kind){covered->triangles.push_back({a,b,c,cross(b-a,c-a),kind});};
+    face({0,0,128},{128,0,128},{128,128,128},0);
+    face({0,0,128},{128,128,128},{0,128,128},0);
+    face({160,0,128},{256,0,128},{256,128,128},0);
+    face({160,0,128},{256,128,128},{160,128,128},0);
+    face({0,0,512},{128,0,512},{128,128,512},1);
+    face({0,0,512},{128,128,512},{0,128,512},1);
+    buildIndex(*covered);rasterize(*covered,2);connect(*covered,2);
+    require(covered->cell(2,2)[0].airAllowed && !covered->cell(5,2)[0].airAllowed);
+    require(covered->cell(10,2)[0].airAllowed && covered->cell(5,2).back().airAllowed);
+    keepReached(*covered);
+    require(covered->cell(2,2).size()==2 && covered->cell(5,2).size()==1 && covered->cell(10,2).size()==1);
+    auto seeded=std::make_unique<Geo>();seeded->blocks[0]=std::make_unique<Block>();seeded->occupied.set();
+    Layer roof;roof.z=400;roof.surface=400;roof.floor=400;
+    Layer inside;inside.z=200;inside.surface=200;inside.floor=200;inside.ceiling=350;inside.airAllowed=false;
+    (*seeded->blocks[0])[0]={inside,roof};seeded->seeds.push_back({8,8,220});
+    connect(*seeded,2);keepReached(*seeded);require(seeded->cell(0,0).size()==2);
     std::cout << "Geodata checks passed: world heights, preserved floors, headroom, steep slopes, walls, NSWE, closed boundary, signed heights, air-accessible ledges, sealed spans and PlayerStart interiors\n";
     return 0;
 }
