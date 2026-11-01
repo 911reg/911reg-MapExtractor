@@ -15,6 +15,7 @@
 namespace extractor {
 namespace {
 struct Event { int32_t id=0;unsigned command=0; };
+using Catalog=std::map<int32_t,std::vector<std::string>>;
 std::vector<Event> readEvents(const Package& package,const Property& property) {
     if(property.kind!=9)throw std::runtime_error("L2GameEvent is not an array");
     Reader reader{property.value};const auto count=reader.compact();
@@ -54,6 +55,26 @@ std::string nameValue(const Package& package,const Property& property) {
     if(reader.offset!=property.value.size())throw std::runtime_error("Trailing actor name data");
     return result;
 }
+std::string catalogText(const std::string& map,const Catalog& catalog) {
+    if(catalog.empty())return {};
+    size_t count=0;for(const auto& [id,entries]:catalog)count+=entries.size();
+    std::string result="Map = "+quoted(map)+"\r\nEvent IDs = "+std::to_string(catalog.size())+"\r\nEntries = "+std::to_string(count)+"\r\n\r\n";
+    for(const auto& [id,entries]:catalog) {
+        result+="Event ID = "+std::to_string(id)+"\r\n";
+        for(const auto& entry:entries)result+=entry+"\r\n";
+    }
+    return result;
+}
+std::string eventName(const std::string& actor,const std::string& tag,const std::string& group) {
+    std::string result=tag.empty() || tag=="None" ? actor : tag;
+    std::istringstream groups(group);std::string part;
+    while(std::getline(groups,part,',')) {
+        const auto first=part.find_first_not_of(" \t\r\n");if(first==std::string::npos)continue;
+        part=part.substr(first,part.find_last_not_of(" \t\r\n")-first+1);
+        if(part!="None")result+="_"+part;
+    }
+    return result;
+}
 }
 int exportEvents(const std::filesystem::path& input,const std::filesystem::path& destination,unsigned workers,bool classic) {
     namespace fs=std::filesystem;
@@ -69,7 +90,7 @@ int exportEvents(const std::filesystem::path& input,const std::filesystem::path&
         for(unsigned worker=0;worker<workers;++worker)pool.emplace_back([&] {
             for(;;) {
                 const auto index=next.fetch_add(1);if(index>=maps.size())break;
-                std::ostringstream report,body;size_t count=0;
+                std::ostringstream report;Catalog catalog;size_t count=0;
                 {std::lock_guard lock(progress);std::cerr<<"MAP "<<output::utf8(maps[index].filename())<<" | map events\n";}
                 try {
                     const auto package=Package::open(maps[index]);
@@ -91,22 +112,22 @@ int exportEvents(const std::filesystem::path& input,const std::filesystem::path&
                                 }
                             }
                             const auto& name=package.exports[actor].name;
-                            std::string label=tag.empty() || tag=="None" ? name : tag;
-                            if(!group.empty() && group!="None")label+="_"+group;
-                            body<<std::setprecision(9);
-                            for(size_t event=0;event<events.size();++event) {
-                                body<<"Begin Event ID="<<events[event].id<<"\r\nActor = "<<quoted(name)<<"\r\nClass = "<<quoted(package.className(actor))
-                                    <<"\r\nEvent Index = "<<event<<"\r\nEvent Command = "<<events[event].command
-                                    <<"\r\nLocation = (X="<<x<<", Y="<<y<<", Z="<<z<<")\r\nEvent Name = "<<quoted(label)
-                                    <<"\r\nTag = "<<quoted(tag)<<"\r\nGroup = "<<quoted(group)<<"\r\nEnd Event\r\n\r\n";
+                            const auto label=eventName(name,tag,group);
+                            for(const auto& event:events) {
+                                std::ostringstream entry;entry<<std::setprecision(9);
+                                entry<<"  Name = "<<quoted(label)<<"\r\n  Actor = "<<quoted(name)<<"\r\n  Command = "<<event.command
+                                    <<"\r\n  Location = (X="<<x<<", Y="<<y<<", Z="<<z<<")\r\n";
+                                catalog[event.id].push_back(entry.str());
                             }
                             count+=events.size();
                         } catch(const std::exception& error) {
                             ++rejected;report<<output::utf8(maps[index].filename())<<" / "<<package.exports[actor].name<<": "<<error.what()<<'\n';
                         }
                     }
-                    auto relative=mapOutput(maps[index],root);relative.replace_filename(relative.stem().wstring()+L"_Events.txt");
-                    output::save(destination/relative,"Map = "+quoted(output::utf8(maps[index].filename()))+"\r\nEvents = "+std::to_string(count)+"\r\n\r\n"+body.str());
+                    if(!catalog.empty()) {
+                        auto relative=mapOutput(maps[index],root);relative.replace_filename(relative.stem().wstring()+L"_Events.txt");
+                        output::save(destination/relative,catalogText(output::utf8(maps[index].filename()),catalog));
+                    } else {std::lock_guard lock(progress);std::cerr<<"No events: "<<output::utf8(maps[index].filename())<<" (no file written)\n";}
                     total+=count;
                 } catch(const std::exception& error) {++failed;report<<output::utf8(maps[index].filename())<<": "<<error.what()<<'\n';}
                 notes[index]=report.str();std::lock_guard lock(progress);std::cerr<<"Checked "<<++completed<<" of "<<maps.size()<<" maps\n";
@@ -134,6 +155,10 @@ int verifyEvents() {
     property.value.push_back(0);rejected=false;
     try {readEvents(package,property);}catch(const std::exception&){rejected=true;}
     if(!rejected || quoted("a\"\\\n")!="\"a\\\"\\\\\\n\"")throw std::runtime_error("Event trailing data or text escaping failed");
+    if(!catalogText("empty",{}).empty())throw std::runtime_error("Empty catalog was rendered");
+    if(eventName("Actor","Effect","None, smoke, None")!="Effect_smoke" || eventName("Actor","None","")!="Actor")throw std::runtime_error("Event display name contains empty groups");
+    const auto grouped=catalogText("map",{{20,{"  Actor = second\r\n"}},{10,{"  Actor = first\r\n","  Actor = duplicate\r\n"}}});
+    if(grouped.find("Event IDs = 2\r\nEntries = 3")==std::string::npos || grouped.find("Event ID = 10")>grouped.find("Event ID = 20") || grouped.find("duplicate")==std::string::npos)throw std::runtime_error("Grouped catalog ordering or entries failed");
     std::cout<<"Event checks passed: arrays, repeated IDs, default command, empty arrays and truncated input\n";return 0;
 }
 }
