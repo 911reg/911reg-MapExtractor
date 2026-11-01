@@ -16,6 +16,7 @@ inline std::filesystem::path taskOutput(const std::filesystem::path& root,unsign
     case 2: name=L"map-details.json"; break;
     case 3: name=L"Geodata"; break;
     case 4: name=L"Pathnodes"; break;
+    case 5: name=L"Events"; break;
     default: throw std::runtime_error("Unknown output task");
     }
     auto base=std::filesystem::weakly_canonical(std::filesystem::absolute(root));

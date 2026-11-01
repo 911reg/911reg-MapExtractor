@@ -4,6 +4,7 @@
 #include "localization.h"
 #include "history.h"
 #include "water.h"
+#include "events.h"
 #include "geodata.h"
 #include "air_clearance.h"
 #include "collision.h"
@@ -28,7 +29,7 @@
 namespace fs = std::filesystem;
 int showUi();
 int verifyCompletion();
-int verifyUi(const wchar_t* source, const wchar_t* destination, bool doors = false, bool water = false, bool geodata = false, bool simple = false, bool pathnodes = false);
+int verifyUi(const wchar_t* source, const wchar_t* destination, bool doors = false, bool water = false, bool geodata = false, bool simple = false, bool pathnodes = false,bool events=false);
 int previewUi(const wchar_t* destination);
 int verifyUiStudio(const wchar_t* directory);
 
@@ -157,7 +158,7 @@ static int run(int argc, wchar_t** argv) {
         if (fs::exists(root)) throw std::runtime_error("Output verification requires a new fixture directory");
         fs::create_directories(root);
         auto need=[](bool condition) { if (!condition) throw std::runtime_error("Task output verification failed"); };
-        for (unsigned mode=0;mode<4;++mode) {
+        for (unsigned mode=0;mode<6;++mode) {
             const auto target=extractor::taskOutput(root,mode);
             need(target.parent_path()==fs::canonical(root));
             if (mode==2) { std::ofstream file(target); file<<"inventory"; }
@@ -169,7 +170,8 @@ static int run(int argc, wchar_t** argv) {
         extractor::clearTaskOutput(root,3);
         extractor::clearTaskOutput(root,2);
         need(!fs::exists(root/"map-details.json") && fs::exists(root/"Doors"));
-        bool rejected=false; try { extractor::clearTaskOutput(root,5); } catch (const std::exception&) { rejected=true; } need(rejected);
+        extractor::clearTaskOutput(root,5);need(!fs::exists(root/"Events") && fs::exists(root/"Pathnodes"));
+        bool rejected=false; try { extractor::clearTaskOutput(root,6); } catch (const std::exception&) { rejected=true; } need(rejected);
         rejected=false; try { extractor::clearTaskOutput({},0); } catch (const std::exception&) { rejected=true; } need(rejected);
         fs::create_directories(root/"External"); std::ofstream(root/"External"/"keep.txt")<<"external";
         if (CreateSymbolicLinkW((root/"Geodata").c_str(),(root/"External").c_str(),SYMBOLIC_LINK_FLAG_DIRECTORY|SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
@@ -195,6 +197,8 @@ static int run(int argc, wchar_t** argv) {
         std::cout << "Client history checks passed\n"; return result;
     }
     if (argc==3 && std::wstring(argv[1])==L"--verify-ui-studio") return verifyUiStudio(argv[2]);
+    if (argc==2 && std::wstring(argv[1])==L"--verify-events") return extractor::verifyEvents();
+    if (argc==4 && std::wstring(argv[1])==L"--verify-ui-events") return verifyUi(argv[2],argv[3],false,false,false,true,false,true);
     if (argc == 3 && std::wstring(argv[1]) == L"--preview-ui") return previewUi(argv[2]);
     if (argc == 3 && std::wstring(argv[1]) == L"--dump-doors") return extractor::dumpDoors(argv[2]);
     if (argc == 2 && std::wstring(argv[1]) == L"--verify-core") return extractor::verifyDoorCore();
@@ -210,7 +214,7 @@ static int run(int argc, wchar_t** argv) {
         i18n::load(); const auto original = i18n::selected();
         for (size_t i = 0; i < i18n::languages().size(); ++i) {
             i18n::select(i);
-            for (const auto& key : {"subtitle","client_label","output_label","task_doors","task_water","water_finished","task_scan","done","partial","failed","server_type","settings_error","open_output_prompt","result_doors","result_water","result_geodata","result_scan","skipped_reasons","result_ready","maps_prefer_normal","maps_prefer_classic","tip_prefer_normal","tip_prefer_classic","tile_pathnodes","include_pathnodes","result_pathnodes","tip_pathnodes","node_format","pn_hint"})
+            for (const auto& key : {"subtitle","client_label","output_label","task_doors","task_water","water_finished","task_scan","done","partial","failed","server_type","settings_error","open_output_prompt","result_doors","result_water","result_geodata","result_scan","skipped_reasons","result_ready","maps_prefer_normal","maps_prefer_classic","tip_prefer_normal","tip_prefer_classic","tile_pathnodes","include_pathnodes","result_pathnodes","tip_pathnodes","node_format","pn_hint","tile_events","event_format","events_txt","events_hint","tip_events","result_events"})
                 if (i18n::tr(key).empty()) throw std::runtime_error("Empty translation");
             if (i18n::format("progress",1,2).find(L"{") != std::wstring::npos) throw std::runtime_error("Translation placeholder failure");
         }
@@ -224,6 +228,7 @@ static int run(int argc, wchar_t** argv) {
             << "MapExtractor water <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
             << "MapExtractor pathnodes <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
             << "Geodata includes Pathnodes/*.pn. --no-pathnodes disables them. --world-heights disables client surface offsets for diagnostics.\n"
+            << "MapExtractor events <client-folder-or-map.unr> --output <new-folder> [--threads 1..64] [--classic]\n"
             << "MapExtractor geodata <client-folder-or-map.unr> --output <new-folder> [--threads 1..64] [--classic]\n"
             << "Door and water: four XML profiles plus L2OFF script fragments. --classic prefers Classic maps with normal output names.\n"
             << "All native tasks accept --map-list <UTF-8-file> with one absolute UNR path per line to process only those maps.\n"
@@ -235,10 +240,11 @@ static int run(int argc, wchar_t** argv) {
     }
     const bool doors = std::wstring(argv[1]) == L"doors";
     const bool water = std::wstring(argv[1]) == L"water";
+    const bool events = std::wstring(argv[1]) == L"events";
     const bool fixture = std::wstring(argv[1]) == L"geodata-fixture";
     extractor::pathnodesOnly=std::wstring(argv[1])==L"pathnodes";
     const bool geodata = std::wstring(argv[1]) == L"geodata" || fixture || extractor::pathnodesOnly;
-    if ((!doors && !water && !geodata && std::wstring(argv[1]) != L"scan") || argc < 5)
+    if ((!doors && !water && !events && !geodata && std::wstring(argv[1]) != L"scan") || argc < 5)
         throw std::runtime_error("Expected scan <directory> --output <manifest.json> [--threads N]");
     fs::path root = fs::canonical(argv[2]);
     fs::path singleMap;
@@ -314,6 +320,7 @@ static int run(int argc, wchar_t** argv) {
     }
     if (doors) return extractor::exportDoors(singleMap.empty() ? root : singleMap,output,workers,classic);
     if (water) return extractor::exportWater(singleMap.empty() ? root : singleMap,output,workers,classic);
+    if (events) return extractor::exportEvents(singleMap.empty() ? root : singleMap,output,workers,classic);
     if (fs::exists(output)) throw std::runtime_error("Output exists; choose a new manifest path");
     auto paths = extractor::selectMaps(singleMap.empty() ? root : singleMap,classic,false);
     if (paths.empty()) throw std::runtime_error("No .unr maps found");

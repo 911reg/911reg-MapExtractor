@@ -41,7 +41,7 @@ HWND clearOutputButton;
 HWND subtitle, clientLabel, outputLabel, taskLabel, capability, taskSelector, languageSelector;
 HWND mapInput;
 HWND logView, progressBar, appTitle, activityLabel;
-HWND taskTiles[5]{};
+HWND taskTiles[6]{};
 size_t displayedLog = 0;
 std::ofstream jobLog;
 HANDLE process = nullptr;
@@ -274,11 +274,12 @@ void savePreferences() {
 }
 void populateServers() {
     visibleServers.clear(); SendMessageW(serverSelector,CB_RESETCONTENT,0,0);
+    if(taskMode==5) { const auto label=i18n::tr("events_txt"); SendMessageW(serverSelector,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label.c_str())); SendMessageW(serverSelector,CB_SETCURSEL,0,0); tipKeys[serverSelector]="tip_events"; EnableWindow(serverSelector,FALSE); return; }
     if (taskMode==4) {
         SendMessageW(serverSelector,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(L"Legacy PN (.pn)"));
         SendMessageW(serverSelector,CB_SETCURSEL,0,0); EnableWindow(serverSelector,FALSE); return;
     }
-    if (taskMode>=3) {
+    if ((taskMode==3 || taskMode==4)) {
         const std::array<std::pair<const char*,const char*>,3> choices{{{"l2j","geo_l2j"},{"both","geo_both"},{"l2off","geo_conv"}}};
         int selected=0;
         for (int i=0;i<3;++i) {
@@ -300,8 +301,8 @@ void populateServers() {
 }
 // Tiles 0, 1 and 3. Slot 2 is the hidden scan task and has no button.
 void placeTasks() {
-    const unsigned shown[]{0,1,3,4};
-    for (unsigned position=0;position<4;++position) SetWindowPos(taskTiles[shown[position]],nullptr,44+int(position)*152,410,144,76,SWP_NOZORDER|SWP_NOACTIVATE);
+    const unsigned shown[]{0,1,3,4,5};
+    for (unsigned position=0;position<5;++position) SetWindowPos(taskTiles[shown[position]],nullptr,44+int(position)*152,410,144,76,SWP_NOZORDER|SWP_NOACTIVATE);
     populateServers();
     studioLayout(GetParent(startButton));
 }
@@ -405,24 +406,25 @@ void updateLanguage() {
     setText(configurationHeading,"studio_configuration");setText(clearLogButton,"studio_clear_log");setText(saveLogButton,"studio_save_log");setText(copyLogButton,"studio_copy_log");
     setText(subtitle,"subtitle"); setText(clientLabel,"client_label"); setText(outputLabel,"output_label");
     SetWindowTextW(inputButton,L"…"); SetWindowTextW(outputButton,L"…"); setText(taskLabel,"task_label");
-    setText(capability,taskMode==4 ? "pn_hint" : "variants_hint"); setText(startButton,"start"); setText(openButton,"open_results");
+    setText(capability,taskMode==5 ? "events_hint" : taskMode==4 ? "pn_hint" : "variants_hint"); setText(startButton,"start"); setText(openButton,"open_results");
     setText(clearOutputButton,"clear_results");
     setText(activityLabel,"studio_console");
-    const std::array<std::string,5> tileKeys{"tile_doors","tile_water","", "tile_geo","tile_pathnodes"};
-    for (unsigned i=0;i<5;++i) if (taskTiles[i]) { setText(taskTiles[i],tileKeys[i]); InvalidateRect(taskTiles[i],nullptr,TRUE); }
+    const std::array<std::string,6> tileKeys{"tile_doors","tile_water","", "tile_geo","tile_pathnodes","tile_events"};
+    for (unsigned i=0;i<6;++i) if (taskTiles[i]) { setText(taskTiles[i],tileKeys[i]); InvalidateRect(taskTiles[i],nullptr,TRUE); }
     SendMessageW(taskSelector,CB_RESETCONTENT,0,0);
     SendMessageW(taskSelector,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(i18n::tr("task_doors").c_str()));
     SendMessageW(taskSelector,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(i18n::tr("task_water").c_str()));
     SendMessageW(taskSelector,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(i18n::tr("task_scan").c_str()));
     SendMessageW(taskSelector,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(i18n::tr("task_geodata").c_str()));
     SendMessageW(taskSelector,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(i18n::tr("tile_pathnodes").c_str()));
+    SendMessageW(taskSelector,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(i18n::tr("tile_events").c_str()));
     SendMessageW(taskSelector,CB_SETCURSEL,taskMode,0);
     if (mapLabel) {
         setText(preferClassicButton,"maps_prefer_classic"); setText(preferNormalButton,"maps_prefer_normal"); setText(mapLabel,"maps_title"); setText(selectAllButton,"maps_all"); setText(clearMapsButton,"maps_none"); setText(combineButton,taskMode==3 ? "include_pathnodes" : "combine_xml");
-        ShowWindow(combineButton,taskMode==4 ? SW_HIDE : SW_SHOW); tipKeys[combineButton]=taskMode==3 ? "tip_pathnodes" : "tip_combine";
+        ShowWindow(combineButton,taskMode>=4 ? SW_HIDE : SW_SHOW); tipKeys[combineButton]=taskMode==3 ? "tip_pathnodes" : "tip_combine";
         setText(mapFilterLabel,"maps_search");
         SendMessageW(mapFilter,EM_SETCUEBANNER,TRUE,reinterpret_cast<LPARAM>(i18n::tr("maps_search").c_str()));
-        setText(serverLabel,taskMode==4 ? "node_format" : taskMode==3 ? "geo_format" : "server_type");
+        setText(serverLabel,taskMode==5 ? "event_format" : taskMode==4 ? "node_format" : taskMode==3 ? "geo_format" : "server_type");
         populateServers();
         updateMapCount();
     }
@@ -452,7 +454,7 @@ std::pair<std::wstring,std::wstring> completionText(DWORD code) {
         else if (line.starts_with("Duplicate door IDs mean")) { duplicateBlock=true; duplicateText+=wide(line)+L"\r\n"; }
         else if (duplicateBlock) duplicateText+=wide(line)+L"\r\n";
     }
-    const auto key=kind=="doors" ? "result_doors" : kind=="water" ? "result_water" : kind=="geodata" ? "result_geodata" : kind=="pathnodes" ? "result_pathnodes" : "result_scan";
+    const auto key=kind=="events" ? "result_events" : kind=="doors" ? "result_doors" : kind=="water" ? "result_water" : kind=="geodata" ? "result_geodata" : kind=="pathnodes" ? "result_pathnodes" : "result_scan";
     const auto title=found ? i18n::format(key,exported,skipped+maps+extra) : i18n::tr(code ? "failed" : "done");
     auto details=title+L"\r\n\r\n";
     if (!reasons.empty()) details+=i18n::tr("skipped_reasons")+L"\r\n\r\n"+reasons;
@@ -493,7 +495,7 @@ void readProgress() {
         }
         if (jobLog.is_open()) { jobLog << line << '\n'; jobLog.flush(); }
         if (line.starts_with("MAP ") || line.starts_with("STAGE ") || line.starts_with("Geodata complete:")) SetWindowTextW(status,wide(line).c_str());
-        if (taskMode>=3 && line.starts_with("STAGE ")) {
+        if ((taskMode==3 || taskMode==4) && line.starts_with("STAGE ")) {
             size_t block=0,blocks=0;
             int stage=line.starts_with("STAGE spatial") ? 10 : line.starts_with("STAGE rasterize") ? 10 : line.starts_with("STAGE movement") ? 35 : line.starts_with("STAGE diagonal") ? 70 : 90;
             const auto at=line.find("| blocks ");
@@ -507,7 +509,7 @@ void readProgress() {
         size_t done=0,total=0;
         if (sscanf_s(line.c_str(),"Checked %zu of %zu maps",&done,&total)==2) {
             completedMaps=done;totalMaps=total;
-            if (taskMode>=3) { SendMessageW(progressBar,PBM_SETRANGE32,0,LPARAM(std::max<size_t>(1,total)*100)); SendMessageW(progressBar,PBM_SETPOS,WPARAM(done*100),0); }
+            if ((taskMode==3 || taskMode==4)) { SendMessageW(progressBar,PBM_SETRANGE32,0,LPARAM(std::max<size_t>(1,total)*100)); SendMessageW(progressBar,PBM_SETPOS,WPARAM(done*100),0); }
             else { SendMessageW(progressBar,PBM_SETRANGE32,0,total); SendMessageW(progressBar,PBM_SETPOS,done,0); }
         }
     }
@@ -613,6 +615,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         taskTiles[1]=control(window,L"BUTTON",L"",WS_TABSTOP|BS_OWNERDRAW,248,410,192,76,121);
         taskTiles[3]=control(window,L"BUTTON",L"",WS_TABSTOP|BS_OWNERDRAW,452,410,192,76,123);
         taskTiles[4]=control(window,L"BUTTON",L"",WS_TABSTOP|BS_OWNERDRAW,500,410,144,76,124);
+        taskTiles[5]=control(window,L"BUTTON",L"",WS_TABSTOP|BS_OWNERDRAW,500,410,144,76,140);
         mapInput=control(window,L"EDIT",L"",0,0,0,0,0); ShowWindow(mapInput,SW_HIDE);
         serverLabel=control(window,L"STATIC",L"",0,400,22,184,22);
         serverSelector=control(window,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,588,16,340,200,116);
@@ -685,7 +688,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SendMessageW(tips,TTM_SETDELAYTIME,TTDT_INITIAL,450);
         SendMessageW(tips,TTM_SETDELAYTIME,TTDT_AUTOPOP,16000);
         RECT tipMargin{14,10,14,10}; SendMessageW(tips,TTM_SETMARGIN,0,reinterpret_cast<LPARAM>(&tipMargin));
-        for (const auto& entry:std::vector<std::pair<HWND,const char*>>{{minimizeButton,"studio_minimize"},{closeButton,"studio_close"},{input,"tip_client"},{inputButton,"tip_client"},{output,"tip_output"},{outputButton,"tip_output"},{mapList,"tip_list"},{mapFilter,"tip_search"},{serverSelector,"tip_server"},{preferClassicButton,"tip_prefer_classic"},{preferNormalButton,"tip_prefer_normal"},{combineButton,"tip_combine"},{languageSelector,"tip_language"},{startButton,"tip_start"},{openButton,"tip_results"},{clearOutputButton,"tip_clear"},{logView,"tip_log"},{progressBar,"tip_log"},{taskTiles[0],"tip_doors"},{taskTiles[1],"tip_water"},{taskTiles[3],"tip_geodata"},{taskTiles[4],"tip_pathnodes"}}) addTip(window,entry.first,entry.second);
+        for (const auto& entry:std::vector<std::pair<HWND,const char*>>{{minimizeButton,"studio_minimize"},{closeButton,"studio_close"},{input,"tip_client"},{inputButton,"tip_client"},{output,"tip_output"},{outputButton,"tip_output"},{mapList,"tip_list"},{mapFilter,"tip_search"},{serverSelector,"tip_server"},{preferClassicButton,"tip_prefer_classic"},{preferNormalButton,"tip_prefer_normal"},{combineButton,"tip_combine"},{languageSelector,"tip_language"},{startButton,"tip_start"},{openButton,"tip_results"},{clearOutputButton,"tip_clear"},{logView,"tip_log"},{progressBar,"tip_log"},{taskTiles[0],"tip_doors"},{taskTiles[1],"tip_water"},{taskTiles[3],"tip_geodata"},{taskTiles[4],"tip_pathnodes"},{taskTiles[5],"tip_events"}}) addTip(window,entry.first,entry.second);
         if (const auto choice=reinterpret_cast<Choice*>(GetWindowLongPtrW(input,GWLP_USERDATA)); choice && choice->edit) addTip(window,choice->edit,"tip_client");
         addTip(window,countersCanvas,"studio_counters_tip");
         addTip(window,statsCanvas,"studio_rate_tip");
@@ -694,7 +697,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
         populateMapList(true); placeTasks();
         consoleLine(L"INFO",theme::blue,i18n::tr("studio_console_ready"),theme::body);
-        if (!verifying) for (unsigned mode=0;mode<=4;++mode) {
+        if (!verifying) for (unsigned mode=0;mode<=5;++mode) {
             try { if (extractor::cleanupIncomplete(text(output),mode)) consoleLine(L"CLEAN",theme::cyan,i18n::tr("studio_cleaned")+L" "+extractor::taskOutput(text(output),mode).wstring(),theme::body); }
             catch (const std::exception&) {}
         }
@@ -784,14 +787,14 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             } catch (const std::exception&) { setText(status,"folder_error"); }
             return 0;
         }
-        if (LOWORD(wParam)>=120 && LOWORD(wParam)<=124 && !process) {
-            SendMessageW(taskSelector,CB_SETCURSEL,LOWORD(wParam)-120,0);
+        if (((LOWORD(wParam)>=120 && LOWORD(wParam)<=124) || LOWORD(wParam)==140) && !process) {
+            SendMessageW(taskSelector,CB_SETCURSEL,LOWORD(wParam)==140 ? 5 : LOWORD(wParam)-120,0);
             SendMessageW(window,WM_COMMAND,MAKEWPARAM(106,CBN_SELCHANGE),reinterpret_cast<LPARAM>(taskSelector)); return 0;
         }
         if (LOWORD(wParam)==117 && !process) { if (taskMode==3) pathnodesEnabled=!pathnodesEnabled; else combineResults=!combineResults; savePreferences(); InvalidateRect(combineButton,nullptr,TRUE); return 0; }
         if (LOWORD(wParam)==116 && HIWORD(wParam)==CBN_SELCHANGE) {
             const auto index=SendMessageW(serverSelector,CB_GETCURSEL,0,0);
-            if (taskMode>=3) {
+            if ((taskMode==3 || taskMode==4)) {
                 geoFormat=index==1 ? "both" : index==2 ? "l2off" : "l2j";
                 savePreferences(); return 0;
             }
@@ -823,15 +826,15 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (LOWORD(wParam) == 106 && HIWORD(wParam) == CBN_SELCHANGE && !process) {
             const auto selected = SendMessageW(taskSelector,CB_GETCURSEL,0,0);
-            if (selected >= 0 && selected <= 4) taskMode = unsigned(selected);
+            if (selected >= 0 && selected <= 5) taskMode = unsigned(selected);
             for (auto tile:taskTiles) InvalidateRect(tile,nullptr,TRUE);
-            EnableWindow(serverSelector,taskMode!=4); EnableWindow(combineButton,(taskMode<2 && selectedServer!="l2off") || taskMode==3);
+            EnableWindow(serverSelector,taskMode!=4 && taskMode!=5); EnableWindow(combineButton,(taskMode<2 && selectedServer!="l2off") || taskMode==3);
             setText(combineButton,taskMode==3 ? "include_pathnodes" : "combine_xml");
-            ShowWindow(combineButton,taskMode==4 ? SW_HIDE : SW_SHOW); tipKeys[combineButton]=taskMode==3 ? "tip_pathnodes" : "tip_combine";
-            if (serverLabel) setText(serverLabel,taskMode==4 ? "node_format" : taskMode==3 ? "geo_format" : "server_type");
-            populateServers(); EnableWindow(serverSelector,taskMode!=4);
+            ShowWindow(combineButton,taskMode>=4 ? SW_HIDE : SW_SHOW); tipKeys[combineButton]=taskMode==3 ? "tip_pathnodes" : "tip_combine";
+            if (serverLabel) setText(serverLabel,taskMode==5 ? "event_format" : taskMode==4 ? "node_format" : taskMode==3 ? "geo_format" : "server_type");
+            populateServers(); EnableWindow(serverSelector,taskMode!=4 && taskMode!=5);
             ShowWindow(capability,capabilityFits ? SW_SHOW : SW_HIDE); InvalidateRect(window,&configurationCard,FALSE);
-            setText(capability,taskMode==4 ? "pn_hint" : "variants_hint");
+            setText(capability,taskMode==5 ? "events_hint" : taskMode==4 ? "pn_hint" : "variants_hint");
             EnableWindow(startButton,sourceReady() && !text(output).empty());
             return 0;
         }
@@ -897,10 +900,10 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             }
             std::vector<wchar_t> executable(32768);
             GetModuleFileNameW(nullptr,executable.data(),32768);
-            auto command = quote(executable.data())+(taskMode == 0 ? L" doors " : taskMode == 1 ? L" water " : taskMode==3 ? L" geodata " : taskMode==4 ? L" pathnodes " : L" scan ")+quote(source)+L" --output "+quote(manifest);
+            auto command = quote(executable.data())+(taskMode == 0 ? L" doors " : taskMode == 1 ? L" water " : taskMode==3 ? L" geodata " : taskMode==4 ? L" pathnodes " : taskMode==5 ? L" events " : L" scan ")+quote(source)+L" --output "+quote(manifest);
             command+=L" --all-variants --threads "+std::to_wstring(workerCount);
             if (combineResults && taskMode<2 && selectedServer!="l2off") command+=L" --combine-xml";
-            command+=L" --server "+quote(std::wstring(selectedServer.begin(),selectedServer.end()));
+            if(taskMode!=5)command+=L" --server "+quote(std::wstring(selectedServer.begin(),selectedServer.end()));
             if (!debugResults) command+=L" --simple-output";
             if (taskMode==3) { command+=L" --geo "+std::wstring(geoFormat.begin(),geoFormat.end()); if (!pathnodesEnabled) command+=L" --no-pathnodes"; }
             if (selectedMapMode) command+=L" --map-list "+quote(selectionPath.wstring());
@@ -990,7 +993,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             EnableWindow(inputButton,TRUE); EnableWindow(outputButton,TRUE); EnableWindow(openButton,TRUE); EnableWindow(clearOutputButton,TRUE);
             EnableWindow(taskSelector,TRUE); EnableWindow(languageSelector,TRUE);
             for (auto tile:taskTiles) EnableWindow(tile,TRUE);
-            EnableWindow(mapList,TRUE); EnableWindow(mapFilter,TRUE); EnableWindow(serverSelector,taskMode!=4); EnableWindow(combineButton,(taskMode<2 && selectedServer!="l2off") || taskMode==3); EnableWindow(preferNormalButton,TRUE); EnableWindow(preferClassicButton,TRUE); EnableWindow(selectAllButton,TRUE); EnableWindow(clearMapsButton,TRUE);
+            EnableWindow(mapList,TRUE); EnableWindow(mapFilter,TRUE); EnableWindow(serverSelector,taskMode!=4 && taskMode!=5); EnableWindow(combineButton,(taskMode<2 && selectedServer!="l2off") || taskMode==3); EnableWindow(preferNormalButton,TRUE); EnableWindow(preferClassicButton,TRUE); EnableWindow(selectAllButton,TRUE); EnableWindow(clearMapsButton,TRUE);
             if (debugResults) {
                 std::ofstream summary(runFolder/"Summary.txt",std::ios::binary); summary<<scanLog;
             } else if (!selectionPath.empty()) { std::error_code error; std::filesystem::remove(selectionPath,error); }
@@ -1101,7 +1104,7 @@ int showUi() {
         SetWindowTextW(mapInput,verificationInput.c_str());
         SetWindowTextW(output,verificationOutput.c_str());
         if (SendMessageW(languageSelector,CB_GETCOUNT,0,0)!=LRESULT(i18n::languages().size())) throw std::runtime_error("Language selector items missing");
-        SendMessageW(window,WM_COMMAND,120+taskMode,0);
+        SendMessageW(window,WM_COMMAND,taskMode==5 ? 140 : 120+taskMode,0);
         SendMessageW(window,WM_COMMAND,103,0);
         if (!process) DestroyWindow(window);
     } else ShowWindow(window,SW_SHOW);
@@ -1164,14 +1167,18 @@ int verifyCompletion() {
     scanLog="WARNING: 11_23.unr: Corrupt neighbouring terrain; flat fallback used.\nRESULT geodata 1 0 0 0 0\n";
     const auto warning=completionText(0);
     if(warning.first!=i18n::format("result_geodata",1,0) || warning.second.find(L"flat fallback used.")==std::wstring::npos || warning.second.find(i18n::tr("result_warnings"))==std::wstring::npos)throw std::runtime_error("Terrain fallback warning lost or counted as skipped map");
+    counters={};counters.consume("SKIPPED: 22_22.unr / Actor1: Invalid EventCmd",5);counters.consume("SKIPPED: 22_22.unr / Actor2: Invalid EventID",5);
+    if(counters.skipped!=2 || counters.details[2].size()!=2)throw std::runtime_error("Event actor skips incorrectly grouped as maps");
+    scanLog="RESULT events 22 2 0 0 0\n";
+    if(completionText(2).first!=i18n::format("result_events",22,2))throw std::runtime_error("Event completion text failed");
     scanLog="ERROR: Output directory is not writable\n";
     if (completionText(1).second.find(L"not writable")==std::wstring::npos) throw std::runtime_error("Failure reason was lost");
     return 0;
 }
 
-int verifyUi(const wchar_t* source, const wchar_t* destination, bool doors, bool water, bool geodata, bool simple, bool pathnodes) {
+int verifyUi(const wchar_t* source, const wchar_t* destination, bool doors, bool water, bool geodata, bool simple, bool pathnodes,bool events) {
     verifying = true; verificationSimple=simple;
-    taskMode = pathnodes ? 4 : geodata ? 3 : water ? 1 : doors ? 0 : 2;
+    taskMode = events ? 5 : pathnodes ? 4 : geodata ? 3 : water ? 1 : doors ? 0 : 2;
     selectedMapMode=false;
     singleMap = std::filesystem::is_regular_file(source);
     verificationInput = source; verificationOutput = destination;

@@ -602,7 +602,7 @@ void studioLayout(HWND window) {
 
     // Configuration card: a vertical flow whose gaps and control heights shrink together on short screens.
     struct Slot { int low,high; };
-    constexpr std::array<Slot,22> slots{{{8,14},{22,26},{6,12},{17,18},{3,4},{28,36},{6,10},{17,18},{3,4},{28,36},{6,10},{17,18},{3,4},{36,46},{8,12},{24,26},{0,20},{6,10},{36,44},{6,8},{28,32},{10,14}}};
+    constexpr std::array<Slot,22> slots{{{8,14},{22,26},{6,12},{17,18},{3,4},{28,36},{6,10},{17,18},{3,4},{28,36},{6,10},{17,18},{3,4},{64,74},{8,12},{24,26},{0,20},{6,10},{36,44},{6,8},{28,32},{10,14}}};
     int low=0,high=0; for(const auto slot:slots){low+=dp(slot.low);high+=dp(slot.high);}
     const float room=std::clamp(float(configurationCard.bottom-configurationCard.top-low)/float(std::max(1,high-low)),0.0f,1.0f);
     std::array<int,slots.size()> at{},size{}; int cursor=configurationCard.top;
@@ -612,8 +612,8 @@ void studioLayout(HWND window) {
     place(clientLabel,x+dp(22),at[3],cw-dp(22),size[3]);place(input,x,at[5],cw-browse-dp(8),size[5]);place(inputButton,x+cw-browse,at[5],browse,size[5]);
     place(outputLabel,x+dp(22),at[7],cw-dp(22),size[7]);outputFrame={x,at[9],x+cw-browse-dp(8),at[9]+size[9]};
     place(output,x+dp(36),at[9]+(size[9]-dp(20))/2,cw-browse-dp(56),dp(20));place(outputButton,x+cw-browse,at[9],browse,size[9]);
-    place(taskLabel,x+dp(22),at[11],cw-dp(22),size[11]);const unsigned shown[]{0,1,3,4};const int tileWidth=(cw-dp(8)*3)/4;
-    for(int i=0;i<4;++i)place(taskTiles[shown[i]],x+i*(tileWidth+dp(8)),at[13],tileWidth,size[13]);
+    place(taskLabel,x+dp(22),at[11],cw-dp(22),size[11]);const unsigned shown[]{0,1,3,4,5};const int tileWidth=(cw-dp(8)*2)/3;
+    for(int i=0;i<5;++i)place(taskTiles[shown[i]],x+(i%3)*(tileWidth+dp(8)),at[13]+(i/3)*(size[13]+dp(6))/2,tileWidth,(size[13]-dp(6))/2);
     place(combineButton,x,at[15],cw,size[15]);
     capabilityFits=size[16]>=dp(16);place(capability,x,at[16]+size[16]-dp(18),cw,dp(18));ShowWindow(capability,capabilityFits?SW_SHOW:SW_HIDE);
     place(startButton,x,at[18],cw,size[18]);
@@ -676,14 +676,14 @@ void drawControl(const DRAWITEMSTRUCT& item) {
         keyboardFocus(item);return;
     }
     FillRect(dc,&r,panel);
-    if(id>=120 && id<=124) {
-        const unsigned index=id-120; const bool selected=taskMode==index;
+    if((id>=120 && id<=124) || id==140) {
+        const unsigned index=id==140 ? 5 : id-120; const bool selected=taskMode==index;
         if(selected && !disabled) {
             roundGradient(dc,r,dpf(8),pressed?theme::accentDeep:hovered?mix(theme::accentHot,RGB(255,255,255),0.1f):theme::accentHot,theme::accentDeep,mix(theme::accentHot,RGB(255,255,255),0.2f));
             roundRect(dc,{r.left+1,r.top+1,r.right-1,r.bottom-1},dpf(7),theme::none,RGB(255,255,255),1,40);
         } else if(selected) roundRect(dc,r,dpf(8),theme::accentTint,mix(theme::accent,theme::surface,0.5f));
         else roundRect(dc,r,dpf(8),disabled?theme::surface:pressed?theme::pressed:hovered?theme::hover:theme::raised,hovered?mix(theme::border,theme::muted,0.4f):theme::border);
-        const Icon glyph=index==0?Icon::door:index==1?Icon::water:index==3?Icon::layers:Icon::nodes;
+        const Icon glyph=index==0?Icon::door:index==1?Icon::water:index==3?Icon::layers:index==5?Icon::spark:Icon::nodes;
         const COLORREF ink=selected && !disabled?theme::base:disabled?theme::faint:theme::text;
         content(glyph,true,selected && !disabled?theme::base:disabled?theme::faint:theme::body,ink,selected?buttonFont:font,r);
         keyboardFocus(item);return;
@@ -816,7 +816,9 @@ void verifyStudioWindow(HWND window) {
     previewPath=studioProof/L"large-counts.bmp";renderPreview(window);
     const auto originalLanguage=i18n::selected();
     for(size_t language=0;language<i18n::languages().size();++language) {
-        i18n::select(language);updateLanguage();studioLayout(window);
+        i18n::select(language);SendMessageW(window,WM_COMMAND,140,0);updateLanguage();studioLayout(window);
+        need(taskMode==5 && !IsWindowEnabled(serverSelector) && !IsWindowVisible(combineButton),"Event task options incorrect");
+        for(const auto tile:taskTiles)if(tile){const auto dc=GetDC(tile);RECT box{};GetClientRect(tile,&box);const int width=textWidth(dc,text(tile),buttonFont);ReleaseDC(tile,dc);need(width+dp(12)<=box.right,"Translated task label clipped");}
         RECT counters{},copy{};GetWindowRect(countersCanvas,&counters);GetWindowRect(copyLogButton,&copy);
         RECT overlap{};need(!IntersectRect(&overlap,&counters,&copy),"Translated counters overlap console tools");
         previewPath=studioProof/(L"language-"+std::to_wstring(language)+L".bmp");renderPreview(window);

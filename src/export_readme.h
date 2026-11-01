@@ -5,7 +5,9 @@ namespace extractor {
 inline void writeExportReadme(const std::filesystem::path& root,const std::string& kind) {
     std::string text;
     const auto server=targetProfile=="all" ? "your selected server format" : targetProfile;
-    if (kind=="PATHNODES") {
+    if (kind=="EVENTS") {
+        text="MAP EVENTS - REFERENCE CATALOG\r\n\r\nUTF-8 text, one <map>_Events.txt per selected map. Classic alternatives are separate. Each record preserves EventID, numeric EventCmd, live actor class/name, array index, unrounded world Location, Tag and Group. Missing EventID/EventCmd/Location fields use Unreal zero defaults. Repeated IDs are retained because multiple actors can respond to one trigger. Event Name is a display label derived from Tag/Group, with actor name as fallback. Quoted text escapes quotes, backslashes and line breaks.\r\n\r\nThese files are a searchable reference, not a server import format. Scripts can use OnEventTrigger(id, true/false); compatible servers provide //event_trigger id true/false for testing. The client map supplies each effect's behavior and position. Numeric commands are preserved for the selected client's definitions. No live client/server files are modified.\r\n";
+    } else if (kind=="PATHNODES") {
         text="PATHNODES - WHAT TO COPY\r\n\r\nCopy the .pn files to the pathnode directory configured by your server. This is the legacy block-centre, eight-link PN layout; verify your server loader supports it. Classic files are alternatives to the normal regions, not additional regions. Missing map neighbours remain closed. Back up existing files and test routes before replacing live data.\r\n";
     } else if (kind=="GEODATA") {
         const char* written=geodataFormat=="l2j" ? "This run wrote L2J/*.l2j only.\r\n" : geodataFormat=="l2off" ? "This run wrote L2OFF/*_conv.dat only.\r\n" : "This run wrote both L2J and L2OFF. Copy only one of those folders.\r\n";

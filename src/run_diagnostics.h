@@ -42,7 +42,7 @@ struct RunCounters {
             auto [subject,reason]=split(line.substr(9));record(1,std::move(subject),std::move(reason));
         } else if(line.starts_with("SKIPPED: ")) {
             const auto item=line.substr(9);
-            if(mode>=2) {
+            if(mode==2 || mode==3 || mode==4) {
                 auto map=item.substr(0,item.find_first_of("/:"));
                 while(!map.empty() && map.back()==' ')map.pop_back();
                 skippedMaps.insert(map);skipped=skippedMaps.size();

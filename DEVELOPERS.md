@@ -6,14 +6,14 @@ Standalone C++20 / Windows x64 / CPU only. No editor runtime or map renderer.
 
 1. Open `dist/MapExtractor.exe` and choose your game folder.
 2. Keep the default `Output` folder or choose another results folder.
-3. Pick your server type at the top, select **Doors**, **Water**, **Geodata** or **Pathnodes**, then check the maps on the right.
+3. Pick your server type at the top, select **Doors**, **Water**, **Geodata**, **Pathnodes** or **Events**, then check the maps on the right.
 4. Click **Start**. Read exported/skipped counts and reasons in the console, then choose whether to open the output folder.
 
-Server type, the combined-file preference and recent clients are saved in `settings.ini`. An existing `911reg.ini` is moved to `settings.ini` only when `settings.ini` is absent. One combined XML file is the default. The window has four tasks: Doors, Water, Geodata and Pathnodes. There is no Advanced switch and no Map check button. `scan` remains a command-line inventory for the checks. The window does not write debug reports; the command line does, unless `--simple-output` is set.
+Server type, the combined-file preference and recent clients are saved in `settings.ini`. An existing `911reg.ini` is moved to `settings.ini` only when `settings.ini` is absent. One combined XML file is the default. The window has five tasks: Doors, Water, Geodata, Pathnodes and Events. There is no Advanced switch and no Map check button. `scan` remains a command-line inventory for the checks. The window does not write debug reports; the command line does, unless `--simple-output` is set.
 
 Single-server exports contain copy-ready files directly inside the task folder, with `README_DOORS.txt`, `README_WATER.txt` or `README_GEODATA.txt`. Geodata writes `L2J/*.l2j` by default; `L2OFF/*_conv.dat` (or both) can be chosen and comes from the same cells.
 
-Choose the client, Maps or System folder and use the checklist to select files. Results go directly into Doors, Water, Geodata or Pathnodes under the chosen output folder. No game/server file is
+Choose the client, Maps or System folder and use the checklist to select files. Results go directly into Doors, Water, Geodata, Pathnodes or Events under the chosen output folder. No game/server file is
 changed. The small language selector supports English, Greek, Spanish,
 Brazilian Portuguese, Albanian, Romanian and German.
 
@@ -273,3 +273,12 @@ are still open. Test generated geodata in game
 before replacing a live server.
 
 Collision triangles are two-sided. Movement chooses the lowest neighbouring span with shared headroom, uses unquantized surface rise (16.32 units onto gentle surfaces; 3.125 onto steep surfaces), and checks directional steep-terrain slope. Reachability retains outdoor-air-connected spans, exposed column tops and PlayerStart-connected lower floors. These rules apply to every mesh and map; there are no asset exclusions.
+
+
+## Map event results
+
+Events writes UTF-8/CRLF `<map>_Events.txt` files directly under Events, with Classic alternatives in their own folder. Each record preserves EventID, numeric EventCmd, live actor identity/class, array index, full float position precision, Tag and Group. Repeated IDs remain separate. Empty maps get an explicit zero-event file. Event Name is a display label; raw Tag/Group remain available. Missing struct fields use native zero defaults. Deleted/unbound actors are excluded. Invalid actors/maps are reported in the console and debug report; extraction never silently discards malformed arrays.
+
+The catalog is for searching, scripts and testing; servers do not automatically import it. Compatible servers use `OnEventTrigger(id, enabled)` and may provide `//event_trigger id true/false`. The client supplies the command behavior. Events ignores server/XML profiles; the UI hides the XML toggle and shows a fixed TXT format. All seven UI languages include Events labels, hints, tooltips and results. Normal map selection, pause/resume, output clearing and interrupted-run cleanup apply.
+
+CLI: `MapExtractor events <client-folder-or-map.unr> --output <new-folder> [--threads 1..64] [--classic] [--all-variants] [--map-list <file>]`. Validation: `--verify-events`, `--verify-ui-events <map> <new-output>` and `--verify-ui-studio <new-proof-folder>`.
