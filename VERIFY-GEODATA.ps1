@@ -1,8 +1,18 @@
-param([string]$Executable)
+param([string]$Executable,[string]$ReceiptRoot)
 $ErrorActionPreference='Stop'
 $taskExe=if ($Executable) { [IO.Path]::GetFullPath($Executable) } else { Join-Path $PSScriptRoot 'dist\MapExtractor.exe' }
-$taskReceipt=Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) ('Tests\MapExtractor\'+[guid]::NewGuid().ToString('N'))
+$taskReceiptRoot=if ($ReceiptRoot) { [IO.Path]::GetFullPath($ReceiptRoot) } else { Join-Path $PSScriptRoot '_tests\geodata' }
+$taskReceipt=Join-Path $taskReceiptRoot ([guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $taskReceipt | Out-Null
+$script:taskInvocation=0
+function Invoke-Extractor {
+    $script:taskInvocation++
+    $taskStdout=Join-Path $taskReceipt "$script:taskInvocation.out"
+    $taskStderr=Join-Path $taskReceipt "$script:taskInvocation.err"
+    $taskProcess=Start-Process -FilePath $taskExe -ArgumentList ($args | ForEach-Object { '"'+$_+'"' }) -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $taskStdout -RedirectStandardError $taskStderr
+    Get-Content -LiteralPath $taskStdout,$taskStderr
+    $script:LASTEXITCODE=$taskProcess.ExitCode
+}
 $taskObj=Join-Path $taskReceipt '20_18.obj'
 @'
 v 0 0 0
@@ -31,10 +41,10 @@ f 13 14 15
 f 13 15 16
 '@ | Set-Content -LiteralPath $taskObj -Encoding ascii
 $taskHash=(Get-FileHash $taskObj).Hash
-& $taskExe --verify-geodata
+Invoke-Extractor --verify-geodata
 if ($LASTEXITCODE) { throw 'Geometry regression failed' }
 foreach ($taskWorkers in @(1,4)) {
-    & $taskExe geodata-fixture $taskObj --output (Join-Path $taskReceipt "workers-$taskWorkers") --threads $taskWorkers
+    Invoke-Extractor geodata-fixture $taskObj --output (Join-Path $taskReceipt "workers-$taskWorkers") --threads $taskWorkers --geo both
     if ($LASTEXITCODE) { throw 'Geodata generation failed' }
 }
 foreach ($taskFile in @('L2J\20_18.l2j','L2OFF\20_18_conv.dat')) {
@@ -43,10 +53,10 @@ foreach ($taskFile in @('L2J\20_18.l2j','L2OFF\20_18_conv.dat')) {
 Add-Type -Path (Join-Path $PSScriptRoot 'VerifyGeoFormats.cs')
 [GeoFormatCheck]::Run((Join-Path $taskReceipt 'workers-1'))
 if ((Get-FileHash $taskObj).Hash -ne $taskHash) { throw 'Source mesh changed' }
-& $taskExe geodata-fixture $taskObj --output (Join-Path $taskReceipt 'workers-1')
+Invoke-Extractor geodata-fixture $taskObj --output (Join-Path $taskReceipt 'workers-1')
 if ($LASTEXITCODE -ne 1) { throw 'Existing output was not refused' }
 'f 1 2 3 4' | Add-Content -LiteralPath $taskObj -Encoding ascii
-& $taskExe geodata-fixture $taskObj --output (Join-Path $taskReceipt 'invalid')
+Invoke-Extractor geodata-fixture $taskObj --output (Join-Path $taskReceipt 'invalid')
 if ($LASTEXITCODE -ne 1 -or (Test-Path (Join-Path $taskReceipt 'invalid\L2J\20_18.l2j'))) { throw 'Invalid collision input published geodata' }
 $taskInput=Join-Path $taskReceipt 'selection'
 New-Item -ItemType Directory -Path $taskInput | Out-Null
@@ -54,7 +64,7 @@ foreach ($taskName in @('22_22.unr','22_22_Classic.unr','23_22.unr')) { Set-Cont
 foreach ($taskClassic in @($false,$true)) {
     $taskArgs=@('scan',$taskInput,'--output',(Join-Path $taskReceipt "selection-$taskClassic.json"))
     if ($taskClassic) { $taskArgs+='--classic' }
-    & $taskExe @taskArgs
+    Invoke-Extractor @taskArgs
     if ($LASTEXITCODE -ne 2) { throw 'Selection fixture expected incomplete scan' }
     $taskJson=Get-Content (Join-Path $taskReceipt "selection-$taskClassic.json") -Raw
     if ($taskClassic -ne $taskJson.Contains('22_22_Classic.unr') -or !$taskJson.Contains('23_22.unr')) { throw 'Classic preference or normal fallback failed' }

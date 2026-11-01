@@ -40,7 +40,7 @@ public static class GeoFormatCheck {
                             }
                             if(f==0) { baseZ=z; baseFlags=flags; }
                             else Need(z==baseZ && (flags&15)==baseFlags,"Height or cardinal movement differs between formats");
-                            if(fixture && b==0 && c==18) Need(counts[0]==1 && z==152,"Roof height or sealed floor survived");
+                            if(fixture && b==0 && c==18) Need(counts[0]==2 && z==(l==0 ? 152 : 24),"Roof height or air-accessible lower floor missing");
                             if(fixture && b==0 && c==26 && l==0) Need((flags&1)!=0,"Upper floor blocked");
                         }
                     }
