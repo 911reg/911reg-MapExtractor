@@ -5,6 +5,7 @@
 #include "history.h"
 #include "water.h"
 #include "geodata.h"
+#include "air_clearance.h"
 #include "collision.h"
 #include "map_selection.h"
 #include "output_tasks.h"
@@ -228,7 +229,8 @@ static int run(int argc, wchar_t** argv) {
             << "All native tasks accept --map-list <UTF-8-file> with one absolute UNR path per line to process only those maps.\n"
             << "--all-variants exports normal and Classic maps separately. Doors/water accept --server <all|l2jserver|acis|l2scripts|mobius|l2off> and --combine-xml.\n"
             << "The window label L2jMabios is the mobius profile. --simple-output omits debug reports and flattens single-server door/water output.\n"
-            << "Geodata reads native UNR terrain, BSP, static-mesh and blocking-volume collision. --geo <l2j|both|l2off> chooses L2J *.l2j (default), both, or L2OFF *_conv.dat. Same cells, four directions.\n";
+            << "Geodata reads native UNR terrain, BSP, static-mesh and blocking-volume collision. --geo <l2j|both|l2off> chooses L2J *.l2j (default), both, or L2OFF *_conv.dat. Same cells, four directions.\n"
+            << "--air-radius N and --air-half-height N set the fixed upright flight cylinder in units (defaults 40 and 30; each 0.1..512). Walking rules and exported heights stay unchanged.\n";
         return 0;
     }
     const bool doors = std::wstring(argv[1]) == L"doors";
@@ -256,6 +258,14 @@ static int run(int argc, wchar_t** argv) {
         if (option == L"--exact-heights") { extractor::compactGeodata=false; continue; }
         if (option == L"--no-pathnodes") { extractor::emitPathnodes=false; continue; }
         if (option == L"--walking-only") { extractor::airReachability=false; continue; }
+        if(option==L"--air-radius" || option==L"--air-half-height") {
+            if(++i>=argc)throw std::runtime_error("Missing air body dimension");
+            std::istringstream value(pathText(fs::path(argv[i])));double dimension=0;
+            if(!(value>>dimension) || !value.eof() || !std::isfinite(dimension) || dimension<0.1 || dimension>512.)throw std::runtime_error("Air body dimensions must be finite values from 0.1 to 512 units");
+            if(option==L"--air-radius")extractor::air::radius=dimension;
+            else extractor::air::halfHeight=dimension;
+            continue;
+        }
         if(option==L"--trace-air") {
             if(++i>=argc || extractor::airTracePoints.size()>=16)throw std::runtime_error("--trace-air requires X,Y,Z; maximum 16 points");
             std::istringstream value(pathText(fs::path(argv[i])));extractor::collision::Point point;char a=0,b=0;

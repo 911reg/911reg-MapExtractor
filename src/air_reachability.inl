@@ -70,7 +70,7 @@ class AirReachability {
         node.parent=parent;node.entry=z;node.seed=seed;pending.push_back(id);
         if(node.layer>=0) {
             auto& layer=(*geo.blocks[size_t(node.x/8)*256+node.y/8])[size_t(node.x%8)*8+node.y%8][node.layer];
-            const double standing=retailHeightOffsets ? layer.surface : layer.floor+air::halfHeight+air::skin;
+            const double standing=air::standingCenter(layer.surface,layer.floor,retailHeightOffsets);
             if(!layer.reach && node.low<=standing && standing<=node.high){layer.reach=true;++added;}
         }
     }

@@ -9,8 +9,13 @@
 #include <vector>
 
 namespace extractor::air {
-constexpr double radius=8.2,halfHeight=22.5,skin=0.01;
+inline double radius=40.,halfHeight=30.;
+constexpr double retailHalfHeight=22.5,skin=0.01;
 using Range=std::pair<double,double>;
+
+inline double standingCenter(double surface,double floor,bool retail) {
+    return retail ? surface+halfHeight-retailHalfHeight : floor+halfHeight+skin;
+}
 
 inline std::optional<Range> triangleRange(const collision::Triangle& triangle,collision::Point from,collision::Point to) {
     const double dx=to.x-from.x,dy=to.y-from.y,length=std::hypot(dx,dy);

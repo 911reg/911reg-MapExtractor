@@ -44,7 +44,7 @@ $taskHash=(Get-FileHash $taskObj).Hash
 Invoke-Extractor --verify-geodata
 if ($LASTEXITCODE) { throw 'Geometry regression failed' }
 foreach ($taskWorkers in @(1,4)) {
-    Invoke-Extractor geodata-fixture $taskObj --output (Join-Path $taskReceipt "workers-$taskWorkers") --threads $taskWorkers --geo both
+    Invoke-Extractor geodata-fixture $taskObj --output (Join-Path $taskReceipt "workers-$taskWorkers") --threads $taskWorkers --geo both --air-radius 8.2 --air-half-height 22.5
     if ($LASTEXITCODE) { throw 'Geodata generation failed' }
 }
 foreach ($taskFile in @('L2J\20_18.l2j','L2OFF\20_18_conv.dat')) {
@@ -53,6 +53,25 @@ foreach ($taskFile in @('L2J\20_18.l2j','L2OFF\20_18_conv.dat')) {
 Add-Type -Path (Join-Path $PSScriptRoot 'VerifyGeoFormats.cs')
 [GeoFormatCheck]::Run((Join-Path $taskReceipt 'workers-1'))
 if ((Get-FileHash $taskObj).Hash -ne $taskHash) { throw 'Source mesh changed' }
+Invoke-Extractor geodata-fixture $taskObj --output (Join-Path $taskReceipt 'large-body') --threads 4 --geo both --air-radius 40 --air-half-height 30
+if ($LASTEXITCODE) { throw 'Large air body generation failed' }
+[GeoFormatCheck]::Run((Join-Path $taskReceipt 'large-body'),'20_18',$false)
+$taskReport=Get-Content (Join-Path $taskReceipt 'large-body\reports\20_18.txt') -Raw
+if (!$taskReport.Contains('radius 40.000000, half-height 30.000000')) { throw 'Air body settings did not reach generation' }
+Invoke-Extractor geodata-fixture $taskObj --output (Join-Path $taskReceipt 'default-body') --threads 1 --geo both
+if ($LASTEXITCODE) { throw 'Default air body generation failed' }
+foreach ($taskFile in @('L2J\20_18.l2j','L2OFF\20_18_conv.dat')) {
+    if ((Get-FileHash (Join-Path $taskReceipt "large-body\$taskFile")).Hash -ne (Get-FileHash (Join-Path $taskReceipt "default-body\$taskFile")).Hash) { throw 'Default air dimensions differ from 40/30' }
+}
+foreach ($taskOption in @('--air-radius','--air-half-height')) {
+    foreach ($taskValue in @('0','-1','513','nan','inf','40oops')) {
+        $taskInvalid=Join-Path $taskReceipt "invalid-body-$taskOption-$taskValue"
+        Invoke-Extractor geodata-fixture $taskObj --output $taskInvalid $taskOption $taskValue
+        if ($LASTEXITCODE -ne 1 -or (Test-Path $taskInvalid)) { throw 'Invalid air body setting was accepted or created output' }
+    }
+    Invoke-Extractor geodata-fixture $taskObj --output (Join-Path $taskReceipt 'missing-body') $taskOption
+    if ($LASTEXITCODE -ne 1) { throw 'Missing air body setting was accepted' }
+}
 Invoke-Extractor geodata-fixture $taskObj --output (Join-Path $taskReceipt 'workers-1')
 if ($LASTEXITCODE -ne 1) { throw 'Existing output was not refused' }
 'f 1 2 3 4' | Add-Content -LiteralPath $taskObj -Encoding ascii

@@ -832,7 +832,7 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
         + "Air reachability: " + (airReachability ? "enabled\n" : "disabled (--walking-only)\n")
         + "Native UE2 client collision; dynamic doors are exported separately. Test movement before replacing a live server.\n"
         + "Settings: cell 16, height unit 8, client surface offsets by default (raw surfaces only with --world-heights), truncate toward zero, headroom 46, mesh surface step 16.32, steep climb 3.125, walk angle 45.573.\n"
-        + "Lower floors are retained when connected to outdoor air through adjacent collision spans with at least 46 units of shared headroom, or by a movement route from an exposed surface or PlayerStart. Air uses an upright cylinder (radius 8.2, half-height 22.5, margin 0.01), active BSP-bound ZoneInfo/PlayerStart positions and exposed sky. It stays within BSP zones, validates continuous horizontal sweeps and vertical clearance, and does not grant walking links. Empty columns are not seeds. Unsupported body coverage at native region edges stays closed for air additions. This is a conservative player-body model, not a wyvern hull. Sealed unseeded lower spans remain excluded. Movement uses unquantized surface rise and the lowest compatible neighbour span. Terrain collision is clipped to the TerrainInfo XY footprint. Missing edge vertices use matching neighbour world heights; unavailable samples extend the local edge flat with an informational message. Adjacent region collision validates movement seams; unavailable neighbours stay closed. Fully open single-floor blocks may be compacted with height changes bounded to 24 units; --exact-heights disables this. Empty cells are closed at -16352.\n"
+        + "Lower floors are retained when connected to outdoor air through adjacent collision spans with at least 46 units of shared headroom, or by a movement route from an exposed surface or PlayerStart. Air uses an upright cylinder (radius " + std::to_string(air::radius) + ", half-height " + std::to_string(air::halfHeight) + ", margin 0.01), active BSP-bound ZoneInfo/PlayerStart positions and exposed sky. It stays within BSP zones, validates continuous horizontal sweeps and vertical clearance, and does not grant walking links. Empty columns are not seeds. Unsupported body coverage at native region edges stays closed for air additions. These are configurable flight-clearance dimensions, not a measured native wyvern hull. Sealed unseeded lower spans remain excluded. Movement uses unquantized surface rise and the lowest compatible neighbour span. Terrain collision is clipped to the TerrainInfo XY footprint. Missing edge vertices use matching neighbour world heights; unavailable samples extend the local edge flat with an informational message. Adjacent region collision validates movement seams; unavailable neighbours stay closed. Fully open single-floor blocks may be compacted with height changes bounded to 24 units; --exact-heights disables this. Empty cells are closed at -16352.\n"
         + "Formats: " + (geodataFormat == "l2j" ? "L2J/*.l2j" : geodataFormat == "l2off" ? "L2OFF/*_conv.dat" : "L2J/*.l2j and L2OFF/*_conv.dat") + ". Four cardinal directions. No live client/server files modified.\n");
     std::cerr << (pathnodesOnly ? "Pathnodes complete: " : "Geodata complete: ") << count << " layers; " << (geodataFormat == "l2j" ? "L2J" : geodataFormat == "l2off" ? "L2OFF" : "L2J, L2OFF") << ".\n";
     return 0;
@@ -943,6 +943,8 @@ int generateGeodata(const std::filesystem::path& input, const std::filesystem::p
 // Fixed triangles: stacked floors, a wall, a 32-unit ramp and a steep face. Workers must agree with VERIFY-GEODATA.
 int verifyGeodata() {
     retailHeightOffsets=false;
+    const double previousAirRadius=air::radius,previousAirHalfHeight=air::halfHeight;
+    air::radius=8.2;air::halfHeight=22.5;
     auto geo = std::make_unique<Geo>();
     auto triangle = [&](V a, V b, V c) { geo->triangles.push_back({a, b, c, cross(b - a, c - a)}); };
     triangle({0, 0, 0}, {128, 0, 0}, {128, 128, 0});
@@ -1053,6 +1055,22 @@ int verifyGeodata() {
     const auto& ledge=chamber->cell(7,7);
     require(std::any_of(ledge.begin(),ledge.end(),[](const auto& layer){return layer.z==48;}));
     require(std::none_of(ledge.begin(),ledge.end(),[](const auto& layer){return layer.z==128;}));
+    air::radius=40.;air::halfHeight=30.;
+    require(!door(39.9) && door(40.1));
+    require(verticalGap(60.1) && !verticalGap(59.9));
+    require(std::abs(air::standingCenter(26.5,0,true)-34.)<1e-9);
+    require(std::abs(air::standingCenter(128.,128.,false)-158.01)<1e-9);
+    const auto largeSlope=air::triangleRange(shape({-100,-100,-100},{100,-100,100},{0,100,0}),{0,0,0},{0,0,0});
+    require(largeSlope && std::abs(largeSlope->first+40.)<1e-6 && std::abs(largeSlope->second-40.)<1e-6);
+    auto largeChamber=std::make_unique<Geo>();
+    largeChamber->triangles=chamber->triangles;largeChamber->zoneSeeds.push_back({128,128,90});
+    retailHeightOffsets=true;
+    buildIndex(*largeChamber);rasterize(*largeChamber,2);connect(*largeChamber,2);keepReached(*largeChamber);
+    const auto& largeLedge=largeChamber->cell(7,7);
+    require(std::any_of(largeLedge.begin(),largeLedge.end(),[](const auto& layer){return layer.z==72;}));
+    require(std::none_of(largeLedge.begin(),largeLedge.end(),[](const auto& layer){return layer.z==152;}));
+    retailHeightOffsets=false;
+    air::radius=previousAirRadius;air::halfHeight=previousAirHalfHeight;
     std::cout << "Geodata checks passed: world heights, preserved floors, headroom, steep slopes, walls, NSWE, closed boundary, signed heights, air-accessible ledges, sealed spans and PlayerStart interiors\n";
     return 0;
 }
