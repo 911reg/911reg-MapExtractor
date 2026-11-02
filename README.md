@@ -11,6 +11,8 @@ Turns Lineage II client maps into server-ready data. One Windows program, no ins
 - **Doors**: XML for L2JServer, aCis, L2Scripts and L2jMabios, or L2OFF `doordata` entries
 - **Water**: water zones as XML per server, or L2OFF `areadata` entries
 - **Geodata**: L2J `.l2j` (default) or L2OFF `_conv.dat`, built from the client's own collision
+- **Events**: per-map TXT catalogs, grouped by event ID; empty maps create no catalog
+- **T3D**: map actors grouped by class, with nested objects and original brush polygons
 - **Pathnodes**: `.pn` files for servers that use them
 - Pick exactly which maps to process; Normal and Classic maps both supported
 - One combined file or one file per map

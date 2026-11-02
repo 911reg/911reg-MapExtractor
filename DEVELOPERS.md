@@ -282,3 +282,13 @@ Events writes UTF-8/CRLF `<map>_Events.txt` files directly under Events, with Cl
 The catalog is for searching, scripts and testing; servers do not automatically import it. Compatible servers use `OnEventTrigger(id, enabled)` and may provide `//event_trigger id true/false`. The client supplies the command behavior. Events ignores server/XML profiles; the UI hides the XML toggle and shows a fixed TXT format. All seven UI languages include Events labels, hints, tooltips and results. Normal map selection, pause/resume, output clearing and interrupted-run cleanup apply.
 
 CLI: `MapExtractor events <client-folder-or-map.unr> --output <new-folder> [--threads 1..64] [--classic] [--all-variants] [--map-list <file>]`. Validation: `--verify-events`, `--verify-ui-events <map> <new-output>` and `--verify-ui-studio <new-proof-folder>`.
+
+## T3D extraction
+
+`MapExtractor t3d <client-folder-or-map.unr> --output <new-folder> [--threads 1..64] [--classic] [--all-variants] [--map-list <file>]` writes `<map>/Package.Class.t3d`, matching class-split UnrealEd exports. The sixth UI tile uses normal selection, progress, cancellation and cleanup, with a fixed T3D format in all seven languages. No server profile is required.
+
+The native reader follows UnrealEd ULevelExporterT3D, UModelExporterT3D and UPolysExporterT3D. Property types, fixed-array dimensions, inherited fields, enum labels and export-object flags come from the selected client System/*.u packages. TerrainLayer/DecorationLayer ZoneRenderState uses the native array<int> declaration when old client scripts omit it. Tagged scalar types also preserve fields omitted by older script packages. Stored tagged values are retained without synthesizing class defaults. Live level actors (including Camera for class-split exports) and L2 LevelObjects are included; deleted actors are omitted. Nested export objects precede their references. Brush polygons come from the original UModel/UPolys data, including transforms and material references. Missing original polygons or unsupported types are explicit skipped actors and produce partial status. External texture/mesh assets remain references and must be available when importing into a compatible editor; this does not reconstruct a compiled map or back up asset packages.
+
+`--verify-t3d` checks serialization boundaries and text formatting. `--verify-ui-t3d <map> <new-output>` exercises the actual UI extraction path; `--verify-ui-studio <new-proof-folder>` checks all seven translations and tile layout.
+
+Full regression: `powershell -File VERIFY-T3D.ps1 -Map <client/Maps/map.unr> -ReceiptRoot <new-tests-folder>` checks source hashes, typed values, malformed data, UI/CLI equality, deterministic output, balanced blocks and class grouping.

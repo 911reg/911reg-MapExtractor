@@ -45,7 +45,7 @@ struct Reader {
     }
 };
 
-struct Object { int32_t type = 0, outer = 0; std::string name; uint32_t flags = 0; size_t offset = 0, size = 0; };
+struct Object { int32_t type = 0, outer = 0; std::string name; uint32_t flags = 0; size_t offset = 0, size = 0; int32_t super=0;std::string importClass; };
 struct Property {
     std::string name, structure;
     uint8_t kind = 0;
@@ -190,13 +190,13 @@ struct Package {
         };
         reader.offset = importsOffset;
         for (size_t i = 0; i < importsCount; ++i) {
-            name(reader.compact()); name(reader.compact());
-            Object object; object.outer = int32_t(reader.word()); object.name = name(reader.compact());
+            const auto classPackage=name(reader.compact()),className=name(reader.compact());
+            Object object;object.importClass=classPackage+"."+className; object.outer = int32_t(reader.word()); object.name = name(reader.compact());
             package.imports.push_back(std::move(object));
         }
         reader.offset = exportsOffset;
         for (size_t i = 0; i < exportsCount; ++i) {
-            Object object; object.type = reader.compact(); reader.compact();
+            Object object; object.type = reader.compact(); object.super=reader.compact();
             object.outer = int32_t(reader.word()); object.name = name(reader.compact()); object.flags = reader.word();
             const auto size = bounded(uint32_t(reader.compact()), bytes.size());
             const auto offset = size ? bounded(uint32_t(reader.compact()), bytes.size()) : 0;
