@@ -654,7 +654,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SendMessageW(logView,EM_SETBKGNDCOLOR,0,theme::inset);SetWindowTheme(logView,L"DarkMode_Explorer",nullptr);
         { CHARFORMAT2W style{}; style.cbSize=sizeof(style); style.dwMask=CFM_COLOR; style.crTextColor=theme::body; SendMessageW(logView,EM_SETCHARFORMAT,SCF_ALL,reinterpret_cast<LPARAM>(&style)); }
         configurationHeading=control(window,L"STATIC",L"",0,0,0,1,1);
-        versionTag=control(window,L"STATIC",L"v0.9.0",0,0,0,1,1);
+        versionTag=control(window,L"STATIC",L"v0.10.0",0,0,0,1,1);
         // Section titles, the map count and the version are painted by paintWindow; the statics keep their text.
         for (const auto hidden:{configurationHeading,mapLabel,activityLabel,mapCount,versionTag}) ShowWindow(hidden,SW_HIDE);
         for (const auto label:{clientLabel,outputLabel,taskLabel,serverLabel}) SendMessageW(label,WM_SETFONT,reinterpret_cast<WPARAM>(labelFont),TRUE);

@@ -6,14 +6,14 @@ Standalone C++20 / Windows x64 / CPU only. No editor runtime or map renderer.
 
 1. Open `dist/MapExtractor.exe` and choose your game folder.
 2. Keep the default `Output` folder or choose another results folder.
-3. Pick your server type at the top, select **Doors**, **Water**, **Geodata**, **Pathnodes** or **Events**, then check the maps on the right.
+3. Pick your server type at the top, select **Doors**, **Water**, **Geodata**, **Pathnodes**, **Events** or **T3D**, then check the maps on the right.
 4. Click **Start**. Read exported/skipped counts and reasons in the console, then choose whether to open the output folder.
 
-Server type, the combined-file preference and recent clients are saved in `settings.ini`. An existing `911reg.ini` is moved to `settings.ini` only when `settings.ini` is absent. One combined XML file is the default. The window has five tasks: Doors, Water, Geodata, Pathnodes and Events. There is no Advanced switch and no Map check button. `scan` remains a command-line inventory for the checks. The window does not write debug reports; the command line does, unless `--simple-output` is set.
+Server type, the combined-file preference and recent clients are saved in `settings.ini`. An existing `911reg.ini` is moved to `settings.ini` only when `settings.ini` is absent. One combined XML file is the default. The window has six tasks: Doors, Water, Geodata, Pathnodes, Events and T3D. There is no Advanced switch and no Map check button. `scan` remains a command-line inventory for the checks. The window does not write debug reports; the command line does, unless `--simple-output` is set.
 
 Single-server exports contain copy-ready files directly inside the task folder, with `README_DOORS.txt`, `README_WATER.txt` or `README_GEODATA.txt`. Geodata writes `L2J/*.l2j` by default; `L2OFF/*_conv.dat` (or both) can be chosen and comes from the same cells.
 
-Choose the client, Maps or System folder and use the checklist to select files. Results go directly into Doors, Water, Geodata, Pathnodes or Events under the chosen output folder. No game/server file is
+Choose the client, Maps or System folder and use the checklist to select files. Results go directly into Doors, Water, Geodata, Pathnodes, Events or T3D under the chosen output folder. No game/server file is
 changed. The small language selector supports English, Greek, Spanish,
 Brazilian Portuguese, Albanian, Romanian and German.
 

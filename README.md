@@ -24,7 +24,7 @@ Turns Lineage II client maps into server-ready data. One Windows program, no ins
 
 ## Use
 
-1. Download the latest release and run `MapExtractor.exe`. Keep the `Languages` and `profiles` folders next to it.
+1. Download the [latest Windows x64 release](https://github.com/911reg/911reg-MapExtractor/releases/latest) and run `MapExtractor.exe`. Keep the `Languages` and `profiles` folders next to it.
 2. Choose your game folder.
 3. Pick a task and your server type, check the maps you want, then click **Start**.
 4. Copy the results from the `Output` folder. Each result folder has a short README that says where the files go.

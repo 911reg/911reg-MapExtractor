@@ -226,7 +226,7 @@ static int run(int argc, wchar_t** argv) {
         std::cout << "Language checks passed: " << i18n::languages().size() << '\n'; return 0;
     }
     if (std::wstring(argv[1]) == L"--help") {
-        std::cout << "911reg MapExtractor 0.9.0 | CPU only\n"
+        std::cout << "911reg MapExtractor 0.10.0 | CPU only\n"
             << "MapExtractor scan <client-folder-or-map.unr> --output <manifest.json> [--threads 1..64]\n"
             << "MapExtractor doors <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
             << "MapExtractor water <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
