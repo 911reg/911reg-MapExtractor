@@ -32,7 +32,8 @@ inline std::optional<Range> triangleRange(const collision::Triangle& triangle,co
         const double ex=b.x-a.x,ey=b.y-a.y,ez=b.z-a.z;
         auto at=[&](double t){if(t>=-1e-10 && t<=1.+1e-10){t=std::clamp(t,0.,1.);add({a.x+t*ex,a.y+t*ey,a.z+t*ez});}};
         const double quadratic=ex*ex+ey*ey;
-        if(quadratic>1e-20)for(const double center:std::array<double,2>{0.,length}) {
+        if(quadratic>1e-20)for(int end=0;end<(length>0 ? 2:1);++end) {
+            const double center=end ? length : 0.;
             const double linear=2.*((a.x-center)*ex+a.y*ey),constant=(a.x-center)*(a.x-center)+a.y*a.y-radius*radius;
             const double discriminant=linear*linear-4.*quadratic*constant;
             if(discriminant>=-1e-8){const double root=std::sqrt(std::max(0.,discriminant));at((-linear-root)/(2.*quadratic));at((-linear+root)/(2.*quadratic));}
@@ -58,7 +59,8 @@ inline std::optional<Range> triangleRange(const collision::Triangle& triangle,co
         const double gx=((a.z-c.z)*(b.y-c.y)-(b.z-c.z)*(a.y-c.y))/denominator;
         const double gy=((b.z-c.z)*(a.x-c.x)-(a.z-c.z)*(b.x-c.x))/denominator;
         const double magnitude=std::hypot(gx,gy);
-        for(const double center:std::array<double,2>{0.,length}) {
+        for(int end=0;end<(length>0 ? 2:1);++end) {
+            const double center=end ? length : 0.;
             projected(center,radius);projected(center,-radius);
             if(magnitude>1e-15){projected(center+radius*gx/magnitude,radius*gy/magnitude);projected(center-radius*gx/magnitude,-radius*gy/magnitude);}
             else projected(center,0.);

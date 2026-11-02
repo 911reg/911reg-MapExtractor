@@ -717,10 +717,11 @@ bool bspEmpty(const WorldBsp& world,Point location) {
     }
     return outside;
 }
-std::vector<BspInterval> bspRegions(const WorldBsp& world,Point from,Point to) {
+void bspRegions(const WorldBsp& world,Point from,Point to,std::vector<BspInterval>& result) {
     struct Part { int32_t node;BspInterval span; };
-    std::vector<Part> pending{{world.nodes.empty() ? -1 : 0,{0,1,0,world.rootOutside}}};
-    std::vector<BspInterval> result;size_t visited=0;
+    thread_local std::vector<Part> pending;
+    pending.clear();pending.push_back({world.nodes.empty() ? -1 : 0,{0,1,0,world.rootOutside}});
+    result.clear();size_t visited=0;
     while(!pending.empty()) {
         const auto part=pending.back();pending.pop_back();
         if(part.node==-1){result.push_back(part.span);continue;}
@@ -735,12 +736,16 @@ std::vector<BspInterval> bspRegions(const WorldBsp& world,Point from,Point to) {
         } else branch(part.span.low,part.span.high,start+delta*(part.span.low+part.span.high)/2.>=0 ? 1 : 0);
     }
     std::sort(result.begin(),result.end(),[](const auto& a,const auto& b){return a.low<b.low;});
-    std::vector<BspInterval> merged;
-    for(const auto& span:result) {
-        if(!merged.empty() && merged.back().zone==span.zone && merged.back().outside==span.outside && std::abs(merged.back().high-span.low)<1e-10)merged.back().high=span.high;
-        else merged.push_back(span);
+    size_t used=0;
+    for(size_t i=0;i<result.size();++i) {
+        const auto span=result[i];
+        if(used && result[used-1].zone==span.zone && result[used-1].outside==span.outside && std::abs(result[used-1].high-span.low)<1e-10)result[used-1].high=span.high;
+        else result[used++]=span;
     }
-    return merged;
+    result.resize(used);
+}
+std::vector<BspInterval> bspRegions(const WorldBsp& world,Point from,Point to) {
+    std::vector<BspInterval> result;bspRegions(world,from,to,result);return result;
 }
 struct Cache::Impl {
     struct Entry { std::shared_ptr<const Scene> scene;size_t bytes;uint64_t used; };
@@ -845,7 +850,14 @@ int verify(const std::filesystem::path& path) {
     need(!bspEmpty(world,{32,0,0}) && bspEmpty(world,{96,0,0}));
     const auto regions=bspRegions(world,{32,0,0},{96,0,0});
     need(regions.size()==2 && !regions[0].outside && regions[1].outside && regions[0].high==0.5 && regions[1].low==0.5 && regions[1].zone==1);
+    std::vector<BspInterval> scratch(10);
+    bspRegions(world,{32,0,0},{96,0,0},scratch);
+    need(scratch.size()==2 && scratch[0].high==0.5 && scratch[1].zone==1);
+    bspRegions(WorldBsp{},{},{},scratch);need(scratch.size()==1 && scratch[0].low==0 && scratch[0].high==1 && scratch[0].outside);
+    bspRegions(world,{96,0,0},{32,0,0},scratch);need(scratch.size()==2 && scratch[0].zone==1 && scratch[1].zone==0);
     world.nodes[0].children[1]=0;rejects([&]{terrainZone(world,{96,0,0});});
+    rejects([&]{bspRegions(world,{96,0,0},{96,0,0},scratch);});
+    bspRegions(WorldBsp{},{},{},scratch);need(scratch.size()==1 && scratch[0].outside);
     std::cout << "Native collision fixtures passed: BSP flags, stored collision faces, material flags, simple-model precedence, holes, transforms and bounds\n";
     return 0;
 }

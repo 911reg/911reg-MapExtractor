@@ -18,6 +18,7 @@ bool terrainZone(const WorldBsp& world,Point point);
 bool bspEmpty(const WorldBsp& world,Point point);
 struct BspInterval { double low=0,high=1;uint8_t zone=0;bool outside=true; };
 std::vector<BspInterval> bspRegions(const WorldBsp& world,Point from,Point to);
+void bspRegions(const WorldBsp& world,Point from,Point to,std::vector<BspInterval>& result);
 bool cylinderHits(const Cylinder& cylinder,const Bounds& area);
 struct Scene {
     WorldBsp world;

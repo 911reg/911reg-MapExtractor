@@ -292,3 +292,9 @@ The native reader follows UnrealEd ULevelExporterT3D, UModelExporterT3D and UPol
 `--verify-t3d` checks serialization boundaries and text formatting. `--verify-ui-t3d <map> <new-output>` exercises the actual UI extraction path; `--verify-ui-studio <new-proof-folder>` checks all seven translations and tile layout.
 
 Full regression: `powershell -File VERIFY-T3D.ps1 -Map <client/Maps/map.unr> -ReceiptRoot <new-tests-folder>` checks source hashes, typed values, malformed data, UI/CLI equality, deterministic output, balanced blocks and class grouping.
+
+## Flight reachability performance
+
+Flight queries reuse exact sorted triangle/cylinder candidate lists in a 64-entry spatial-bucket cache. Retained candidate capacity is bounded to 4 MiB; oversized queries use one uncached scratch entry. Triangle bounds are computed once for the air pass. BSP segment traversal reuses per-thread pending storage and caller-owned interval buffers, with in-place interval merging. Stationary cylinder checks evaluate their coincident circular ends once. These changes preserve the original geometry, tolerances, traversal order and clearance dimensions; they do not add map-specific rules or skip collision checks.
+
+Performance validation compares the previous and current executables against unchanged client inputs, including hashes of the resulting L2J and PN files. Keep maps and asset dependencies fixed while benchmarking; an editor save invalidates a before/after comparison. `VERIFY-GEODATA.ps1` retains the sealed-space, sweep, 40/30 body, deterministic-worker and L2J/L2OFF equivalence checks.
