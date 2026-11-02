@@ -24,6 +24,7 @@ foreach($taskWorkers in @(1,4)) {
 $taskFiles=@(Get-ChildItem (Join-Path $taskReceipt 'workers-1') -Filter '*_Events.txt' | Where-Object Name -ne 'README_EVENTS.txt')
 if($taskFiles.Count -ne 1) {throw 'Expected one event catalog'}
 $taskName=$taskFiles[0].Name
+if((Get-Content (Join-Path $taskReceipt 'workers-1/README_EVENTS.txt') -Raw).Contains('Choose only the folder matching your server')) {throw 'Event guidance contains server format instructions'}
 if((Get-FileHash $taskFiles[0].FullName).Hash -ne (Get-FileHash (Join-Path $taskReceipt "workers-4/$taskName")).Hash) {throw 'Worker determinism failed'}
 $taskText=Get-Content $taskFiles[0].FullName -Raw -Encoding utf8
 $taskCount=[int]([regex]::Match($taskText,'(?m)^Entries = (\d+)').Groups[1].Value)

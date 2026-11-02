@@ -20,7 +20,7 @@ inline void writeExportReadme(const std::filesystem::path& root,const std::strin
         text="WATER ZONES - WHAT TO COPY\r\n\r\nServer format: "+std::string(server)+"\r\n\r\n1. Back up your server's existing water-zone definitions.\r\n2. Use water.xml, or the per-map XML files if you turned off the one-file option.\r\n3. Add these water zones to the zone XML loaded by your server. Keep unrelated zones. Do not load the same water zones twice.\r\n4. Restart or reload zone data using your server's normal procedure.\r\n\r\naCis: use the WaterZone loader's zone file.\r\nL2Scripts: keep the matching zones schema and DTD expected by your version.\r\nClassic contains alternative definitions. Use them only with Classic maps.\r\nThe exact zone filename and directory vary by server version.\r\n";
         if (targetProfile=="l2off" || targetProfile=="all") text+="\r\nL2OFF: merge the .txt area fragments into Script/areadata.txt. Keep existing non-water areas. Do not replace the full script with these fragments.\r\n";
     } else text="MAP CHECK\r\n\r\nmap-details.json is a technical inventory of the selected client maps. It is not a file to install on your server.\r\n";
-    if (targetProfile=="all" && kind!="GEODATA") text+="\r\nChoose only the folder matching your server. Do not install every server format.\r\n";
+    if (targetProfile=="all" && kind!="GEODATA" && kind!="EVENTS") text+="\r\nChoose only the folder matching your server. Do not install every server format.\r\n";
     output::save(root/("README_"+kind+".txt"),text);
 }
 }
