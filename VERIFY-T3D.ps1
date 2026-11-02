@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Map,[string]$ReceiptRoot)
+﻿param([Parameter(Mandatory=$true)][string]$Map,[string]$ReceiptRoot)
 $ErrorActionPreference='Stop'
 $taskExe=Join-Path $PSScriptRoot 'dist/MapExtractor.exe'
 $taskMap=[IO.Path]::GetFullPath($Map)
@@ -43,6 +43,10 @@ foreach($taskFile in $taskFiles) {
         elseif($taskLine -match '^\s*End (\w+)') {if(!$taskStack.Count -or $taskStack.Pop() -ne $Matches[1]) {throw "Unbalanced T3D: $taskRelative"}}
     }
     if($taskStack.Count) {throw "Unclosed T3D: $taskRelative"}
+    if($taskText -match '(?m)^ +' -or $taskText -cmatch '(?m)=(True|False)(?=[,\)\r\n])' -or $taskText.Contains('Begin Surface')) {throw "Reference indentation/boolean/envelope mismatch: $taskRelative"}
+    foreach($taskVector in [regex]::Matches($taskText,'(?m)^(\t+)(Origin   |Normal   |TextureU |TextureV |Vertex   )([^\r\n]+)')) {
+        if($taskVector.Groups[1].Length -lt 4 -or $taskVector.Groups[3].Value -notmatch '^[+-]\d{5,}\.\d{6},[+-]\d{5,}\.\d{6},[+-]\d{5,}\.\d{6}$') {throw "Reference polygon vector format mismatch: $taskRelative"}
+    }
     $taskClass=($taskFile.BaseName -split '\.')[-1]
     foreach($taskActor in [regex]::Matches($taskText,'(?m)^Begin (?:Actor|LevelObject) Class=(\S+) Name=(\S+)')) {
         if(($taskActor.Groups[1].Value -split '\.')[-1] -ne $taskClass) {throw 'Class grouping mismatch'}

@@ -26,8 +26,11 @@ std::string quote(const std::string& value) {
 }
 std::string number(float value) {
     if(!std::isfinite(value))throw std::runtime_error("Non-finite T3D float");
-    std::ostringstream text;text.imbue(std::locale::classic());text<<std::setprecision(std::numeric_limits<float>::max_digits10)<<value;
-    auto result=text.str();if(result.find_first_of(".eE")==std::string::npos)result+=".0";return result;
+    std::ostringstream text;text.imbue(std::locale::classic());text<<std::fixed<<std::setprecision(6)<<value;return text.str();
+}
+std::string coordinate(float value) {
+    if(!std::isfinite(value))throw std::runtime_error("Non-finite T3D coordinate");
+    std::ostringstream text;text.imbue(std::locale::classic());text<<std::fixed<<std::setprecision(6)<<std::showpos<<std::internal<<std::setfill('0')<<std::setw(13)<<value;return text.str();
 }
 size_t count(Reader& reader,size_t limit=1000000){const auto n=reader.compact();if(n<0 || size_t(n)>limit)throw std::runtime_error("T3D array exceeds limit");return size_t(n);}
 std::string stringValue(Reader& reader) {
@@ -112,7 +115,7 @@ class Writer {
         if(t.kind=="IntProperty")return std::to_string(int32_t(r.word()));
         if(t.kind=="Int64Property"){const uint64_t low=r.word(),high=r.word();return std::to_string(std::bit_cast<int64_t>(low|(high<<32)));}
         if(t.kind=="FloatProperty")return number(std::bit_cast<float>(r.word()));
-        if(t.kind=="BoolProperty")return r.byte() ? "True" : "False";
+        if(t.kind=="BoolProperty")return r.byte() ? "true" : "false";
         if(t.kind=="NameProperty")return quote(map.package->name(r.compact()));
         if(t.kind=="StrProperty" || t.kind=="StringProperty")return quote(stringValue(r));
         if(t.kind=="ByteProperty") {
@@ -139,13 +142,19 @@ class Writer {
         if(t.kind=="DelegateProperty"){const auto ref=r.compact();const auto name=map.package->name(r.compact());return ref ? map.package->objectPath(ref)+'.'+name : "None";}
         throw std::runtime_error("Unsupported T3D property type: "+t.kind);
     }
-    std::string properties(const std::vector<Property>& properties,const Ref& owner,const std::string& indent,unsigned depth,std::vector<size_t>& children,bool inlineStruct=false) {
-        std::string result;
+    std::string properties(const std::vector<Property>& properties,const Ref& owner,const std::string& indent,unsigned depth,std::vector<size_t>& children,bool inlineStruct=false,bool emitObjects=false) {
+        std::string result;size_t emittedChildren=0;
         for(const auto& p:properties) {
             const auto t=field(owner,p);Reader r{p.value};
-            auto append=[&](const std::string& key,const std::string& text){if(inlineStruct){if(!result.empty())result+=',';result+=key+'='+text;}else result+=indent+key+'='+text+"\r\n";};
+            auto append=[&](const std::string& key,const std::string& text){
+                if(emitObjects)while(emittedChildren<children.size()) {
+                    const auto child=children[emittedChildren++];
+                    if(emitted.insert(child).second)result+=map.package->className(child)=="Engine.Model" ? brush(child,indent) : object(child,indent,"Object",depth+1);
+                }
+                if(inlineStruct){if(!result.empty())result+=',';result+=key+'='+text;}else result+=indent+key+'='+text+"\r\n";
+            };
             auto key=p.name;if(t.dimension>1 || p.element)key+='('+std::to_string(p.element)+')';
-            if(p.kind==3){if(t.kind!="BoolProperty")throw std::runtime_error("T3D bool type mismatch: "+p.name);append(key,p.boolean ? "True" : "False");continue;}
+            if(p.kind==3){if(t.kind!="BoolProperty")throw std::runtime_error("T3D bool type mismatch: "+p.name);append(key,p.boolean ? "true" : "false");continue;}
             if(t.kind=="ArrayProperty" || t.kind=="NativeIntArray") {
                 const auto size=count(r);auto inner=t.kind=="NativeIntArray" ? Type{"IntProperty"} : type(packages.resolve(t.definition,t.target));inner.flags|=t.flags&8;
                 if(inlineStruct) {std::string values="(";for(size_t i=0;i<size;++i){if(i)values+=',';values+=value(r,inner,depth+1,children);}append(key,values+')');}
@@ -155,7 +164,7 @@ class Writer {
         }
         return result;
     }
-    std::string point(Reader& r){const auto x=number(std::bit_cast<float>(r.word())),y=number(std::bit_cast<float>(r.word())),z=number(std::bit_cast<float>(r.word()));return x+','+y+','+z;}
+    std::string point(Reader& r){const auto x=coordinate(std::bit_cast<float>(r.word())),y=coordinate(std::bit_cast<float>(r.word())),z=coordinate(std::bit_cast<float>(r.word()));return x+','+y+','+z;}
     int32_t polys(size_t model) {
         size_t offset=0;map.package->properties(model,&offset);const auto& object=map.package->exports[model];Reader r{map.package->data,offset,object.offset+object.size};r.skip(41);
         for(int i=0;i<2;++i)r.skip(count(r)*12);
@@ -166,21 +175,20 @@ class Writer {
     std::string brush(size_t model,const std::string& indent) {
         const auto reference=polys(model);if(reference<=0 || size_t(reference)>map.package->exports.size() || map.package->className(size_t(reference-1))!="Engine.Polys")throw std::runtime_error("Brush has no original polygon data");
         size_t offset=0;map.package->properties(size_t(reference-1),&offset);const auto& object=map.package->exports[size_t(reference-1)];Reader r{map.package->data,offset,object.offset+object.size};const auto size=r.word(),capacity=r.word();if(size>1000000 || capacity<size)throw std::runtime_error("Invalid T3D polygon database");
-        std::string result=indent+"Begin Brush Name="+map.package->exports[model].name+"\r\n"+indent+"   Begin PolyList\r\n";
+        std::string result=indent+"Begin Brush Name="+map.package->exports[model].name+"\r\n"+indent+"\tBegin PolyList\r\n";
         for(unsigned i=0;i<size;++i) {
             const auto vertices=count(r,64);const auto origin=point(r),normal=point(r),u=point(r),v=point(r);std::vector<std::string> points;for(size_t j=0;j<vertices;++j)points.push_back(point(r));
             const auto flags=r.word();r.compact();const auto material=r.compact();const auto item=map.package->name(r.compact());const auto link=r.compact();r.compact();if(map.package->version<78)throw std::runtime_error("Unsupported old brush polygon");if(map.package->version>=106)r.skip(4);if(map.package->version>=123 && map.package->version<=133 && map.package->licensee>=23 && map.package->licensee<=40)r.skip(4);
-            result+=indent+"      Begin Polygon";if(item!="None")result+=" Item="+item;if(material)result+=" Texture="+map.package->objectPath(material);if(flags)result+=" Flags="+std::to_string(flags);if(link!=-1)result+=" Link="+std::to_string(link);result+="\r\n";
-            result+=indent+"         Origin   "+origin+"\r\n"+indent+"         Normal   "+normal+"\r\n"+indent+"         TextureU "+u+"\r\n"+indent+"         TextureV "+v+"\r\n";for(const auto& p:points)result+=indent+"         Vertex   "+p+"\r\n";result+=indent+"      End Polygon\r\n";
+            result+=indent+"\t\tBegin Polygon";if(item!="None")result+=" Item="+item;if(material)result+=" Texture="+map.package->objectPath(material);if(flags)result+=" Flags="+std::to_string(flags);if(link!=-1)result+=" Link="+std::to_string(link);result+="\r\n";
+            result+=indent+"\t\t\tOrigin   "+origin+"\r\n"+indent+"\t\t\tNormal   "+normal+"\r\n"+indent+"\t\t\tTextureU "+u+"\r\n"+indent+"\t\t\tTextureV "+v+"\r\n";for(const auto& p:points)result+=indent+"\t\t\tVertex   "+p+"\r\n";result+=indent+"\t\tEnd Polygon\r\n";
         }
-        if(r.offset!=r.end)throw std::runtime_error("T3D polygon boundary mismatch");return result+indent+"   End PolyList\r\n"+indent+"End Brush\r\n";
+        if(r.offset!=r.end)throw std::runtime_error("T3D polygon boundary mismatch");return result+indent+"\tEnd PolyList\r\n"+indent+"End Brush\r\n";
     }
     std::string object(size_t index,const std::string& indent,const std::string& kind,unsigned depth) {
         if(depth>32 || !active.insert(index).second)throw std::runtime_error("Cyclic T3D inline object");
         const auto& p=*map.package;const auto& item=p.exports.at(index);const auto classRef=packages.resolve(map,item.type);
-        std::vector<size_t> children;const auto body=properties(p.properties(index),classRef,indent+"   ",0,children);
-        std::string nested;for(const auto child:children)if(!emitted.contains(child)){emitted.insert(child);nested+=p.className(child)=="Engine.Model" ? brush(child,indent+"   ") : object(child,indent+"   ","Object",depth+1);}
-        active.erase(index);return indent+"Begin "+kind+" Class="+(kind=="LevelObject" ? p.className(index) : leaf(p.className(index)))+" Name="+item.name+"\r\n"+nested+body+indent+"End "+kind+"\r\n";
+        std::vector<size_t> children;const auto body=properties(p.properties(index),classRef,indent+"\t",depth,children,false,true);
+        active.erase(index);return indent+"Begin "+kind+" Class="+(kind=="LevelObject" ? p.className(index) : leaf(p.className(index)))+" Name="+item.name+"\r\n"+body+indent+"End "+kind+"\r\n";
     }
 public:
     Writer(Packages& packages,const std::shared_ptr<const Package>& package,const std::string& module):packages(packages),map{package,module,0}{}
@@ -209,7 +217,7 @@ int exportT3d(const std::filesystem::path& input,const std::filesystem::path& de
                         const auto properties=p->properties(actor);if(std::any_of(properties.begin(),properties.end(),[](const auto& v){return (v.name=="bDeleteMe" || v.name=="bPendingDelete") && v.kind==3 && v.boolean;}))continue;
                         const auto text=writer.actor(actor,levelObject);const auto type=p->className(actor);if(type.find_first_of("/\\:\"<>|?*\r\n")!=std::string::npos)throw std::runtime_error("Invalid T3D class filename");groups[type]+=text;++count;
                     }catch(const std::exception& e){++rejected;report<<output::utf8(maps[index].filename())<<" / "<<p->exports[actor].name<<": "<<e.what()<<'\n';}
-                    auto folder=mapOutput(maps[index],root);folder.replace_extension();for(const auto& [type,text]:groups)output::save(destination/folder/(type+".t3d"),"Begin Map\r\n"+text+"Begin Surface\r\nEnd Surface\r\nEnd Map\r\n");accepted+=count;
+                    auto folder=mapOutput(maps[index],root);folder.replace_extension();for(const auto& [type,text]:groups)output::save(destination/folder/(type+".t3d"),"Begin Map\r\n"+text+"End Map\r\n");accepted+=count;
                 }catch(const std::exception& e){++failed;report<<output::utf8(maps[index].filename())<<": "<<e.what()<<'\n';}
                 notes[index]=report.str();std::lock_guard lock(progress);std::cerr<<"Checked "<<++completed<<" of "<<maps.size()<<" maps\n";
             }
@@ -221,8 +229,10 @@ int exportT3d(const std::filesystem::path& input,const std::filesystem::path& de
 int verifyT3d() {
     auto need=[](bool condition){if(!condition)throw std::runtime_error("T3D serialization check failed");};
     need(quote("a\"\\\n\r\t")=="\"a\\\"\\\\\\n\\r\\t\"");
-    need(number(1.5f)=="1.5" && number(-1532.f)=="-1532.0");
-    for(const auto value:{1.e-30f,std::numeric_limits<float>::max(),std::numeric_limits<float>::min(),183888.f,0.00000012345678f})need(std::stof(number(value))==value);
+    need(number(1.5f)=="1.500000" && number(-1532.f)=="-1532.000000");
+    need(number(0.12345678f)=="0.123457" && number(1.e-30f)=="0.000000" && number(-0.f)=="-0.000000");
+    need(coordinate(0.f)=="+00000.000000" && coordinate(-0.f)=="-00000.000000" && coordinate(8.25f)=="+00008.250000");
+    need(coordinate(-150.2958984375f)=="-00150.295898" && coordinate(183888.f)=="+183888.000000");
     bool rejected=false;try{number(std::numeric_limits<float>::infinity());}catch(const std::exception&){rejected=true;}need(rejected);
     auto package=std::make_shared<Package>();package->version=123;package->names={"None","Count","ModeA","ModeB"};
     package->imports={{0,0,"Core"},{0,-1,"IntProperty"}};
@@ -232,15 +242,19 @@ int verifyT3d() {
     auto decode=[&](const Type& type,const std::vector<uint8_t>& bytes){Reader r{bytes};const auto result=writer.value(r,type,0,children);need(r.offset==bytes.size());return result;};
     need(decode(Type{"IntProperty"},{255,255,255,255})=="-1");
     need(decode(Type{"Int64Property"},{0,0,0,0,0,0,0,128})=="-9223372036854775808");
-    need(decode(Type{"FloatProperty"},{0,0,192,63})=="1.5");
-    need(decode(Type{"BoolProperty"},{1})=="True");
+    need(decode(Type{"FloatProperty"},{0,0,192,63})=="1.500000");
+    need(decode(Type{"BoolProperty"},{1})=="true");
     need(decode(Type{"NameProperty"},{1})=="\"Count\"");
     need(decode(Type{"StrProperty"},{0})=="\"\"");
     need(decode(Type{"StrProperty"},{3,'h','i',0})=="\"hi\"");
     need(decode(Type{"StrProperty"},{130,0xA9,3,0,0})=="\"Ω\"");
     const Ref ref{package,"Fixture",0};
+    Property enabled;enabled.name="Enabled";enabled.kind=3;enabled.boolean=true;
+    need(writer.properties({enabled},{package,"Fixture",1},"\t",0,children)=="\tEnabled=true\r\n");
+    const std::vector<uint8_t> vectorBytes{0,0,128,63,0,0,0,64,0,0,64,64};Reader vectorReader{vectorBytes};
+    need(writer.point(vectorReader)=="+00001.000000,+00002.000000,+00003.000000");
     need(decode(Type{"ByteProperty",0,1,ref,3},{1})=="ModeB");
-    need(decode(Type{"StructProperty",0,1,ref,1},{0,0,128,63,0,0,0,64,0,0,64,64})=="(X=1.0,Y=2.0,Z=3.0)");
+    need(decode(Type{"StructProperty",0,1,ref,1},{0,0,128,63,0,0,0,64,0,0,64,64})=="(X=1.000000,Y=2.000000,Z=3.000000)");
     need(decode(Type{"StructProperty",0,1,ref,2},{1,0x22,42,0,0,0,0})=="(Count=42)");
     need(decode(Type{"ArrayProperty",0,1,ref,4},{2,1,0,0,0,255,255,255,255})=="(1,-1)");
     need(decode(Type{"ObjectProperty",8},{1})=="Class'Vector'" && children==std::vector<size_t>{0});
@@ -249,6 +263,6 @@ int verifyT3d() {
     }
     rejected=false;try{decode(Type{"IntProperty"},{1,2,3});}catch(const std::exception&){rejected=true;}need(rejected);
     rejected=false;try{decode(Type{"ArrayProperty",0,1,ref,4},{129});}catch(const std::exception&){rejected=true;}need(rejected);
-    std::cout<<"T3D checks passed: precision, escaping, Unicode, scalars, structs, enums, arrays, inline references and invalid boundaries\n";return 0;
+    std::cout<<"T3D checks passed: reference decimals, signed padding, escaping, Unicode, scalars, structs, enums, arrays, inline references and invalid boundaries\n";return 0;
 }
 }
