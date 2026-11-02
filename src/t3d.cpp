@@ -103,10 +103,15 @@ class Writer {
         if(const auto found=scalars.find(property.kind);found!=scalars.end())return fields.emplace(key,Type{found->second}).first->second;
         throw std::runtime_error("Missing T3D property type: "+owner.module+"."+name);
     }
+    std::string objectPath(int32_t ref) const {
+        auto path=map.package->objectPath(ref);
+        if(ref>0){if(lower(path).starts_with("mylevel."))path.replace(0,7,"myLevel");else path="myLevel."+path;}
+        return path;
+    }
     std::string objectText(int32_t ref) {
         if(!ref)return "None";
         const auto& p=*map.package;
-        if(ref>0)return leaf(p.className(size_t(ref-1)))+"'"+p.objectPath(ref)+"'";
+        if(ref>0)return leaf(p.className(size_t(ref-1)))+"'"+objectPath(ref)+"'";
         const auto index=size_t(-int64_t(ref)-1);if(index>=p.imports.size())throw std::runtime_error("Invalid T3D import");
         return leaf(p.imports[index].importClass)+"'"+p.objectPath(ref)+"'";
     }
@@ -139,7 +144,7 @@ class Writer {
             const auto size=count(r);auto inner=type(packages.resolve(t.definition,t.target));inner.flags|=t.flags&8;std::string result="(";
             for(size_t i=0;i<size;++i){if(i)result+=',';result+=value(r,inner,depth+1,children);}return result+')';
         }
-        if(t.kind=="DelegateProperty"){const auto ref=r.compact();const auto name=map.package->name(r.compact());return ref ? map.package->objectPath(ref)+'.'+name : "None";}
+        if(t.kind=="DelegateProperty"){const auto ref=r.compact();const auto name=map.package->name(r.compact());return ref ? objectPath(ref)+'.'+name : "None";}
         throw std::runtime_error("Unsupported T3D property type: "+t.kind);
     }
     std::string properties(const std::vector<Property>& properties,const Ref& owner,const std::string& indent,unsigned depth,std::vector<size_t>& children,bool inlineStruct=false,bool emitObjects=false) {
@@ -179,7 +184,7 @@ class Writer {
         for(unsigned i=0;i<size;++i) {
             const auto vertices=count(r,64);const auto origin=point(r),normal=point(r),u=point(r),v=point(r);std::vector<std::string> points;for(size_t j=0;j<vertices;++j)points.push_back(point(r));
             const auto flags=r.word();r.compact();const auto material=r.compact();const auto item=map.package->name(r.compact());const auto link=r.compact();r.compact();if(map.package->version<78)throw std::runtime_error("Unsupported old brush polygon");if(map.package->version>=106)r.skip(4);if(map.package->version>=123 && map.package->version<=133 && map.package->licensee>=23 && map.package->licensee<=40)r.skip(4);
-            result+=indent+"\t\tBegin Polygon";if(item!="None")result+=" Item="+item;if(material)result+=" Texture="+map.package->objectPath(material);if(flags)result+=" Flags="+std::to_string(flags);if(link!=-1)result+=" Link="+std::to_string(link);result+="\r\n";
+            result+=indent+"\t\tBegin Polygon";if(item!="None")result+=" Item="+item;if(material)result+=" Texture="+objectPath(material);if(flags)result+=" Flags="+std::to_string(flags);if(link!=-1)result+=" Link="+std::to_string(link);result+="\r\n";
             result+=indent+"\t\t\tOrigin   "+origin+"\r\n"+indent+"\t\t\tNormal   "+normal+"\r\n"+indent+"\t\t\tTextureU "+u+"\r\n"+indent+"\t\t\tTextureV "+v+"\r\n";for(const auto& p:points)result+=indent+"\t\t\tVertex   "+p+"\r\n";result+=indent+"\t\tEnd Polygon\r\n";
         }
         if(r.offset!=r.end)throw std::runtime_error("T3D polygon boundary mismatch");return result+indent+"\tEnd PolyList\r\n"+indent+"End Brush\r\n";
@@ -257,7 +262,11 @@ int verifyT3d() {
     need(decode(Type{"StructProperty",0,1,ref,1},{0,0,128,63,0,0,0,64,0,0,64,64})=="(X=1.000000,Y=2.000000,Z=3.000000)");
     need(decode(Type{"StructProperty",0,1,ref,2},{1,0x22,42,0,0,0,0})=="(Count=42)");
     need(decode(Type{"ArrayProperty",0,1,ref,4},{2,1,0,0,0,255,255,255,255})=="(1,-1)");
-    need(decode(Type{"ObjectProperty",8},{1})=="Class'Vector'" && children==std::vector<size_t>{0});
+    need(decode(Type{"ObjectProperty",8},{1})=="Class'myLevel.Vector'" && children==std::vector<size_t>{0});
+    package->exports.push_back({0,0,"MyLevel"});package->exports[0].outer=5;
+    need(writer.objectText(1)=="Class'myLevel.Vector'");
+    package->imports.push_back({0,0,"Assets"});Object texture;texture.outer=-3;texture.name="Rock";texture.importClass="Engine.Texture";package->imports.push_back(texture);
+    need(writer.objectText(-4)=="Texture'Assets.Rock'");
     for(const auto& bytes:std::vector<std::vector<uint8_t>>{{3,'h','i'},{130,0xA9,3,1,0},{129,1}}) {
         rejected=false;try{decode(Type{"StrProperty"},bytes);}catch(const std::exception&){rejected=true;}need(rejected);
     }
