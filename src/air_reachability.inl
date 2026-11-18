@@ -85,7 +85,7 @@ class AirReachability {
         if(node.layer>=0) {
             auto& layer=(*geo.blocks[size_t(node.x/8)*256+node.y/8])[size_t(node.x%8)*8+node.y%8][node.layer];
             const double standing=air::standingCenter(layer.surface,layer.floor,retailHeightOffsets);
-            if(!layer.reach && node.low<=standing && standing<=node.high){layer.reach=true;++added;}
+            if(!layer.reach && node.low<=standing && standing<=node.high){layer.reach=true;layer.air=true;++added;}
         }
     }
     void seed(V p,const char* kind) {

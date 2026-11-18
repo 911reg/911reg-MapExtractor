@@ -98,12 +98,16 @@ public:
         };
         while (root.has_parent_path() && root!=root.parent_path() && !clientRoot(root)) root=root.parent_path();
         if (!clientRoot(root)) throw std::runtime_error("Cannot find this map's client root (System or Maps/StaticMeshes/Textures folders required)");
-        for (const auto& dir:{"StaticMeshes","Textures","System","Maps"}) {
+        for (const auto& dir:{"System/CustomFiles","StaticMeshes","Textures","System","Maps"}) {
             const auto folder=root/dir; if (!std::filesystem::is_directory(folder)) continue;
             for (const auto& entry:std::filesystem::directory_iterator(folder)) {
                 if (entry.is_symlink() || !entry.is_regular_file()) continue;
                 const auto ext=folded(entry.path().extension().wstring());
-                if (ext==L".usx" || ext==L".utx" || ext==L".u" || ext==L".unr") paths[folded(entry.path().stem().wstring())].push_back(entry.path());
+                if (ext==L".usx" || ext==L".utx" || ext==L".u" || ext==L".unr") {
+                    auto& candidates=paths[folded(entry.path().stem().wstring())];
+                    if(folder!=root/"System"/"CustomFiles" && !candidates.empty() && candidates.front().parent_path()==root/"System"/"CustomFiles")continue;
+                    candidates.push_back(entry.path());
+                }
             }
         }
     }
@@ -194,6 +198,14 @@ std::vector<Triangle> model(const Object& object,WorldBsp* world=nullptr) {
     }
     std::vector<unsigned> flags; n=count(r,20);
     for (size_t i=0;i<n;++i) { r.compact(); flags.push_back(r.word()); for (int j=0;j<6;++j) r.compact(); r.skip(20+(p.version>=123 && p.licensee>=23 ? 4 : 0)); }
+    if(world) {
+        for(size_t i=0;i<nodes.size();++i) {
+            const auto& node=nodes[i];
+            if(!node.vertices)continue;
+            if(node.surf<0 || size_t(node.surf)>=flags.size())throw std::runtime_error("Invalid BSP surface");
+            if(flags[node.surf]&(0x8u|0x04000000u))world->nodes[i].solid=false;
+        }
+    }
     std::vector<int> pool; n=count(r,2); for (size_t i=0;i<n;++i) { pool.push_back(r.compact()); r.compact(); }
     if(world) {
         r.word();const auto zones=r.word();if(zones>64)throw std::runtime_error("Invalid world BSP zone count");
@@ -811,8 +823,22 @@ int verify(const std::filesystem::path& path) {
     };
     package->data=modelBytes(0); package->exports={{-2,0,"World",0,0,package->data.size()}};
     auto faces=model({package,0}); need(faces.size()==2 && faces[0].normal.z>0);
-    package->data=modelBytes(8); need(model({package,0}).empty());
-    package->data=modelBytes(0); package->data.back()=0x40; rejects([&] { model({package,0}); });
+    for(const auto surfaceFlags:{0u,8u,0x04000000u,67108873u,67109129u,0x20u,1u}) {
+        package->data=modelBytes(surfaceFlags);
+        word(package->data,0);word(package->data,0);
+        for(int i=0;i<5;++i)package->data.push_back(0);
+        word(package->data,1);
+        package->exports[0].size=package->data.size();
+        WorldBsp parsed;
+        const auto triangles=model({package,0},&parsed);
+        const bool blocking=!(surfaceFlags&(0x8u|0x04000000u));
+        need(parsed.nodes.size()==1 && parsed.nodes[0].solid==blocking);
+        need(triangles.size()==(blocking ? 2u : 0u));
+        need(bspEmpty(parsed,{0,0,-1})==!blocking && bspEmpty(parsed,{0,0,1}));
+        const auto spans=bspRegions(parsed,{0,0,-1},{0,0,1});
+        need(!spans.empty() && spans.front().outside==!blocking && spans.back().outside);
+    }
+    package->data=modelBytes(0);package->exports[0].size=package->data.size(); package->data.back()=0x40; rejects([&] { model({package,0}); });
     Files files(path);
     auto meshBytes=[&](bool enabled,int collisionRef) {
         std::vector<uint8_t> bytes{1,0x59,uint8_t(enabled ? 4 : 2),1};

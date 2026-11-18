@@ -77,7 +77,9 @@ historical or custom loader.
 Native collision is decoded independently from client packages. The level's
 native actor database identifies live map actors; its model reference selects
 world BSP, avoiding orphaned brush models. BSP planes set face winding and
-NotSolid/Portal surfaces are excluded. Terrain reads native ToWorld coordinates,
+NotSolid/Portal surfaces are excluded from both collision triangles and BSP
+solid-space classification; their nodes remain available for zone traversal.
+Terrain reads native ToWorld coordinates,
 G16/P8 height mips, QuadVisibilityBitmap and EdgeTurnBitmap, including Inverted.
 Static meshes use serialized collision-face indices/planes with material
 EnableCollision, or the referenced collision Model when UseSimpleBoxCollision
@@ -89,6 +91,10 @@ StaticMeshActor cylinder overrides use Location, CollisionRadius and
 CollisionHeight (half-height) directly in world space. Circular cell overlap
 and the complete vertical solid span are rasterized analytically, with no
 mesh package dependency or polygon approximation. Terrain XY clipping applies.
+
+Collision package lookup gives `System/CustomFiles` priority over standard
+client asset folders. Air-discovered floors retain their walking-connected
+neighbours using the existing movement links and headroom checks.
 
 Native layouts are bounded to the supported UE2 package profiles. Missing
 static-mesh packages exclude affected actors with warnings. Missing required

@@ -1,3 +1,4 @@
+#include <source_location>
 #include "geodata.h"
 #include "export_utils.h"
 #include "collision.h"
@@ -233,7 +234,7 @@ struct Sample {
     float z = 0;
     unsigned char kind = 0;
     bool steep = false,center=true,surface=true;
-    uint32_t object=0; bool closed=false,spanOnly=false; float ray=0; int direction=0;
+    uint32_t object=0; bool closed=false,spanOnly=false,walkSupport=false; float ray=0; int direction=0;
 };
 
 float sampleHeight(const Sample& sample, bool top) {
@@ -296,13 +297,17 @@ void addSample(std::vector<Sample>& samples, const Triangle& triangle, float x0,
     Sample sample{smin,smax,z,triangle.kind,steep,center,triangle.normal.z>=-1e-8};
     sample.object=triangle.object; sample.closed=triangle.closed;
     sample.direction=triangle.normal.z>1e-8 ? 1 : triangle.normal.z<-1e-8 ? -1 : 0;
-    if (sample.closed && sample.direction) {
+    if ((sample.closed && sample.direction) || (!sample.steep && sample.direction>0 && sample.kind!=1)) {
         const double x=double(x0)+8,y=double(y0)+8;
         const double denominator=(triangle.b.y-triangle.c.y)*(triangle.a.x-triangle.c.x)+(triangle.c.x-triangle.b.x)*(triangle.a.y-triangle.c.y);
         const double a=((triangle.b.y-triangle.c.y)*(x-triangle.c.x)+(triangle.c.x-triangle.b.x)*(y-triangle.c.y))/denominator;
         const double b=((triangle.c.y-triangle.a.y)*(x-triangle.c.x)+(triangle.a.x-triangle.c.x)*(y-triangle.c.y))/denominator;
-        sample.center=a>=-1e-7 && b>=-1e-7 && a+b<=1.0000001;
-        sample.ray=float(a*triangle.a.z+b*triangle.b.z+(1-a-b)*triangle.c.z);
+        const bool centered=a>=-1e-7 && b>=-1e-7 && a+b<=1.0000001;
+        sample.walkSupport=centered && !sample.steep && sample.direction>0;
+        if(sample.closed) {
+            sample.center=centered;
+            sample.ray=float(a*triangle.a.z+b*triangle.b.z+(1-a-b)*triangle.c.z);
+        }
     }
     samples.push_back(sample);
 }
@@ -391,6 +396,10 @@ void rasterize(Geo& geo, unsigned workers) {
                 layer.floor = spans[i].smax;
                 layer.ceiling = ceiling;
                 layer.steep = top && top->steep;
+                if(layer.steep && top->kind!=1)for(const auto& sample:samples) {
+                    if(!sample.walkSupport || sample.kind==1 || sample.smin<spans[i].smin-1 || sample.smax>spans[i].smax+1)continue;
+                    if(top->z-sample.z<=mergeGap){layer.steep=false;break;}
+                }
                 layer.terrain = top && top->kind == 1;
                 if(layer.floor+headroom<terrainHeight && collision::terrainZone(geo.world,{double(x0)+8,double(y0)+8,double(layer.floor)+headroom/2.}))layer.airAllowed=false;
                 cell.push_back(layer);
@@ -511,18 +520,28 @@ void keepReached(Geo& geo) {
         for(int i=0;i<int(cell->size());++i)if((*cell)[i].floor<=int(seed.z))found=i;
         if(found>=0)visit(x,y,found);
     }
-    while(!stack.empty()) {
-        const auto node=stack.back();stack.pop_back();
-        const auto& layer=(*at(node.x,node.y))[node.index];
-        for(int direction=0;direction<4;++direction) {
-            if(!(layer.flags&flags[direction]))continue;
-            const int nx=node.x+dx[direction],ny=node.y+dy[direction];
-            auto* neighbor=at(nx,ny);if(!neighbor)continue;
-            const int index=linkedIndex(*neighbor,layer);
-            if(index>=0)visit(nx,ny,index);
+    auto walk=[&] {
+        while(!stack.empty()) {
+            const auto node=stack.back();stack.pop_back();
+            const auto& layer=(*at(node.x,node.y))[node.index];
+            for(int direction=0;direction<4;++direction) {
+                if(!(layer.flags&flags[direction]))continue;
+                const int nx=node.x+dx[direction],ny=node.y+dy[direction];
+                auto* neighbor=at(nx,ny);if(!neighbor)continue;
+                const int index=linkedIndex(*neighbor,layer);
+                if(index>=0)visit(nx,ny,index);
+            }
         }
+    };
+    walk();
+    if(airReachability) {
+        AirReachability air(geo);air.run();
+        for(size_t b=0;b<geo.blocks.size();++b)if(geo.blocks[b])for(size_t c=0;c<64;++c) {
+            const auto& cell=(*geo.blocks[b])[c];
+            for(size_t i=0;i<cell.size();++i)if(cell[i].air)stack.push_back({int(b/256)*8+int(c/8),int(b%256)*8+int(c%8),int(i)});
+        }
+        walk();
     }
-    if(airReachability){AirReachability air(geo);air.run();}
     for(auto& block:geo.blocks)if(block) {
         bool used=false;
         for(auto& cell:*block) {
@@ -965,7 +984,7 @@ int verifyGeodata() {
     rasterize(*geo, 2);
     connect(*geo, 2);
     preserveFloors(*geo);
-    auto require = [](bool ok) { if (!ok) throw std::runtime_error("Geodata geometry check failed"); };
+    auto require = [](bool ok,std::source_location site=std::source_location::current()) { if (!ok) throw std::runtime_error("Geodata geometry check failed at line "+std::to_string(site.line())); };
     auto shape=[](V a,V b,V c){return Triangle{a,b,c,cross(b-a,c-a)};};
     const V sweepFrom{0,0,50},sweepTo{32,0,50};
     auto door=[&](double halfGap) {
@@ -1034,7 +1053,7 @@ int verifyGeodata() {
     require(covered->cell(2,2)[0].airAllowed && !covered->cell(5,2)[0].airAllowed);
     require(covered->cell(10,2)[0].airAllowed && covered->cell(5,2).back().airAllowed);
     keepReached(*covered);
-    require(covered->cell(2,2).size()==2 && covered->cell(5,2).size()==1 && covered->cell(10,2).size()==1);
+    require(covered->cell(2,2).size()==2 && covered->cell(5,2).size()==2 && covered->cell(10,2).size()==1);
     auto seeded=std::make_unique<Geo>();seeded->blocks[0]=std::make_unique<Block>();seeded->occupied.set();
     Layer roof;roof.z=400;roof.surface=400;roof.floor=400;
     Layer inside;inside.z=200;inside.surface=200;inside.floor=200;inside.ceiling=350;inside.airAllowed=false;
@@ -1055,6 +1074,31 @@ int verifyGeodata() {
     const auto& ledge=chamber->cell(7,7);
     require(std::any_of(ledge.begin(),ledge.end(),[](const auto& layer){return layer.z==48;}));
     require(std::none_of(ledge.begin(),ledge.end(),[](const auto& layer){return layer.z==128;}));
+    auto bevel=std::make_unique<Geo>();
+    auto bevelFace=[&](V a,V b,V c){bevel->triangles.push_back({a,b,c,cross(b-a,c-a)});};
+    bevelFace({0,0,0},{32,0,0},{32,16,0});bevelFace({0,0,0},{32,16,0},{0,16,0});
+    bevelFace({32,0,0},{36,0,0},{36,16,0});bevelFace({32,0,0},{36,16,0},{32,16,0});
+    for(int x=0;x<3;++x) {
+        const double peak=x==1 ? 8. : 2.;
+        bevelFace({x*16.+1,1,peak},{x*16.+4,15,peak-6},{x*16.+1,15,peak});
+    }
+    buildIndex(*bevel);rasterize(*bevel,2);
+    require(bevel->cell(0,0).size()==1 && !bevel->cell(0,0)[0].steep && bevel->cell(0,0)[0].surface==2);
+    require(bevel->cell(1,0)[0].steep && bevel->cell(2,0)[0].steep);
+    Layer approach;approach.surface=-7;approach.floor=-7;
+    require(canStep(*bevel,approach,bevel->cell(0,0)[0],0,0,1,0));
+    require(canStep(*bevel,bevel->cell(0,0)[0],approach,1,0,0,0));
+    require(!canStep(*bevel,approach,bevel->cell(1,0)[0],0,0,1,0));
+    auto doorway=std::make_unique<Geo>();doorway->blocks[0]=std::make_unique<Block>();doorway->occupied.set();
+    for(int x=0;x<5;++x) {
+        Layer lower;lower.surface=200;lower.floor=200;lower.z=200;lower.ceiling=x==1 ? 250 : x==3 ? 245 : 350;
+        (*doorway->blocks[0])[size_t(x)*8]={lower,roof};
+    }
+    doorway->zoneSeeds.push_back({8,8,250});
+    air::halfHeight=30.;
+    connect(*doorway,2);keepReached(*doorway);connect(*doorway,2);
+    for(int x=0;x<3;++x)require(doorway->cell(x,0).size()==2);
+    require(doorway->cell(3,0).size()==1 && doorway->cell(4,0).size()==1);
     air::radius=40.;air::halfHeight=30.;
     require(!door(39.9) && door(40.1));
     require(verticalGap(60.1) && !verticalGap(59.9));
