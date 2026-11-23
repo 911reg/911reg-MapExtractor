@@ -14,6 +14,7 @@ inline std::vector<std::filesystem::path> requestedMaps;
 inline bool allVariants=false, combineXml=false;
 inline bool debugFiles=true;
 inline bool useCollisionCache=true;
+inline bool disregardAdjacentMaps=false;
 inline bool retailHeightOffsets=true,emitPathnodes=true,pathnodesOnly=false,compactGeodata=true;
 inline std::string geodataFormat="l2j";
 inline std::string targetProfile="all";
@@ -45,6 +46,12 @@ inline void preferMapVariant(std::vector<std::filesystem::path>& maps,bool class
 }
 inline std::wstring folded(std::wstring value) {
     std::transform(value.begin(),value.end(),value.begin(),[](wchar_t c) { return wchar_t(std::towlower(c)); }); return value;
+}
+inline std::filesystem::path adjacentRegion(const std::map<std::wstring,std::filesystem::path>& files,int x,int y,bool classic) {
+    if(x<0 || y<0 || x>99 || y>99)return {};
+    auto digits=[](int n){return (n<10 ? L"0":L"")+std::to_wstring(n);};const auto base=digits(x)+L"_"+digits(y);
+    if(classic){const auto found=files.find(base+L"_classic");if(found!=files.end())return found->second;}
+    const auto found=files.find(base);return found==files.end() ? std::filesystem::path{}:found->second;
 }
 inline void filterRequestedMaps(std::vector<std::filesystem::path>& maps) {
     if (requestedMaps.empty()) return;

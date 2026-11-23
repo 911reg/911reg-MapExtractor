@@ -2,9 +2,11 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <utility>
 #include "collision.h"
 namespace extractor {
 inline bool airReachability=true;
+inline std::vector<std::pair<int,int>> cellTracePoints;
 inline std::vector<collision::Point> airTracePoints;
 // Writes L2J/*.l2j and L2OFF/*_conv.dat. classic prefers XX_YY_Classic.unr. fixture reads an OBJ, not a client map.
 int generateGeodata(const std::filesystem::path& source,const std::filesystem::path& output,unsigned workers,bool classic=false,bool fixture=false);

@@ -1,3 +1,5 @@
+#include "geodata_viewer.h"
+#include "geodata_selection.h"
 #include <windows.h>
 #include <commdlg.h>
 #include <shlobj.h>
@@ -45,6 +47,7 @@ HWND taskTiles[7]{};
 size_t displayedLog = 0;
 std::ofstream jobLog;
 HANDLE process = nullptr;
+HANDLE labProcess=nullptr;
 HANDLE scanPipe = nullptr;
 HFONT font, titleFont;
 HFONT logFont;
@@ -247,7 +250,7 @@ void refreshClients(const std::wstring& selected) {
     SendMessageW(input,CB_RESETCONTENT,0,0);
     for (const auto& client : clientHistory->load()) SendMessageW(input,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(client.c_str()));
     SetWindowTextW(input,selected.c_str());
-    EnableWindow(startButton,!process && sourceReady() && !text(output).empty());
+    EnableWindow(startButton,!process && !labProcess && sourceReady() && !text(output).empty());
 }
 std::filesystem::path clientMaps() {
     auto root=std::filesystem::path(text(input));
@@ -256,10 +259,11 @@ std::filesystem::path clientMaps() {
     return root;
 }
 HWND preferClassicButton,preferNormalButton;
-HWND mapList,mapFilter,mapFilterLabel,mapLabel,mapCount,selectAllButton,clearMapsButton,serverSelector,combineButton;
+HWND mapList,mapFilter,mapFilterLabel,mapLabel,mapCount,selectAllButton,clearMapsButton,serverSelector,combineButton,disregardAdjacentButton;
 std::vector<std::filesystem::path> availableMaps;
 HWND serverLabel;
 bool pathnodesEnabled=true;
+bool disregardAdjacentEnabled=false;
 bool updatingMaps=false,combineResults=true,debugResults=false,verificationSimple=false,lockMapSelection=false;
 std::string selectedServer="l2jserver",geoFormat="l2j";
 std::vector<std::string> visibleServers;
@@ -270,7 +274,7 @@ std::wstring wide(const std::string& value);
 #include "ui_studio.h"
 void savePreferences() {
     if (verifying) return;
-    if (!extractor::UiPreferences{selectedServer,combineResults,debugResults,geoFormat,pathnodesEnabled}.save(preferencesPath)) SetWindowTextW(status,i18n::tr("settings_error").c_str());
+    if (!extractor::UiPreferences{selectedServer,combineResults,debugResults,geoFormat,pathnodesEnabled,disregardAdjacentEnabled}.save(preferencesPath)) SetWindowTextW(status,i18n::tr("settings_error").c_str());
 }
 void populateServers() {
     visibleServers.clear(); SendMessageW(serverSelector,CB_RESETCONTENT,0,0);
@@ -309,7 +313,7 @@ void placeTasks() {
 }
 void updateMapCount() {
     SetWindowTextW(mapCount,i18n::format("maps_count",selectedMaps.size(),availableMaps.size()).c_str());
-    EnableWindow(startButton,!process && sourceReady() && !text(output).empty());
+    EnableWindow(startButton,!process && !labProcess && sourceReady() && !text(output).empty());
     if(activityCanvas) InvalidateRect(activityCanvas,nullptr,FALSE);
     if(const auto parent=GetParent(mapCount)) InvalidateRect(parent,&mapsTitle,FALSE);
 }
@@ -403,6 +407,7 @@ void renderPreview(HWND window) {
 
 void setText(HWND target, const std::string& key) { SetWindowTextW(target,i18n::tr(key).c_str()); }
 void updateLanguage() {
+    setText(geoViewerButton,"geodata_lab");
     SetWindowTextW(minimizeButton,i18n::tr("studio_minimize").c_str());SetWindowTextW(closeButton,i18n::tr("studio_close").c_str());
     setText(configurationHeading,"studio_configuration");setText(clearLogButton,"studio_clear_log");setText(saveLogButton,"studio_save_log");setText(copyLogButton,"studio_copy_log");
     setText(subtitle,"subtitle"); setText(clientLabel,"client_label"); setText(outputLabel,"output_label");
@@ -424,6 +429,7 @@ void updateLanguage() {
     if (mapLabel) {
         setText(preferClassicButton,"maps_prefer_classic"); setText(preferNormalButton,"maps_prefer_normal"); setText(mapLabel,"maps_title"); setText(selectAllButton,"maps_all"); setText(clearMapsButton,"maps_none"); setText(combineButton,taskMode==3 ? "include_pathnodes" : "combine_xml");
         ShowWindow(combineButton,taskMode>=4 ? SW_HIDE : SW_SHOW); tipKeys[combineButton]=taskMode==3 ? "tip_pathnodes" : "tip_combine";
+        setText(disregardAdjacentButton,"disregard_adjacent");ShowWindow(disregardAdjacentButton,taskMode==3 ? SW_SHOW:SW_HIDE);EnableWindow(disregardAdjacentButton,taskMode==3 && !process);
         setText(mapFilterLabel,"maps_search");
         SendMessageW(mapFilter,EM_SETCUEBANNER,TRUE,reinterpret_cast<LPARAM>(i18n::tr("maps_search").c_str()));
         setText(serverLabel,taskMode==6 ? "t3d_format" : taskMode==5 ? "event_format" : taskMode==4 ? "node_format" : taskMode==3 ? "geo_format" : "server_type");
@@ -582,13 +588,19 @@ HWND control(HWND parent, const wchar_t* type, const wchar_t* caption,
     return window;
 }
 
+#include "ui_geodata_lab.h"
+
 LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_PRINTCLIENT:
     case WM_PAINT: {
         PAINTSTRUCT paint{}; HDC dc=message==WM_PAINT ? BeginPaint(window,&paint) : reinterpret_cast<HDC>(wParam);
         RECT bounds{};GetClientRect(window,&bounds);
-        { Buffered buffer(dc,bounds); paintWindow(window,buffer.dc); }
+        if(message==WM_PAINT && paint.rcPaint.top>=bounds.bottom-dp(36)){
+            const int height=dp(36);const auto memory=CreateCompatibleDC(dc);const auto bitmap=CreateCompatibleBitmap(dc,std::max(1L,bounds.right),height);
+            if(memory && bitmap){const auto previous=SelectObject(memory,bitmap);paintStatusBar(memory,{0,0,bounds.right,height});BitBlt(dc,0,bounds.bottom-height,bounds.right,height,memory,0,0,SRCCOPY);SelectObject(memory,previous);}else paintStatusBar(dc,{0,bounds.bottom-height,bounds.right,bounds.bottom});
+            if(bitmap)DeleteObject(bitmap);if(memory)DeleteDC(memory);
+        }else { Buffered buffer(dc,bounds); paintWindow(window,buffer.dc); }
         if (message==WM_PAINT) EndPaint(window,&paint); return 0;
     }
     case WM_CREATE: {
@@ -623,6 +635,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         serverLabel=control(window,L"STATIC",L"",0,400,22,184,22);
         serverSelector=control(window,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,588,16,340,200,116);
         combineButton=control(window,L"BUTTON",L"",WS_TABSTOP|BS_OWNERDRAW,44,502,600,38,117);
+        disregardAdjacentButton=control(window,L"BUTTON",L"",WS_TABSTOP|BS_OWNERDRAW,0,0,1,1,156);
         mapLabel=control(window,L"STATIC",L"",0,1052,126,280,24);
         mapFilterLabel=control(window,L"STATIC",L"",0,1052,160,280,20);
         mapFilter=control(window,L"EDIT",L"",ES_AUTOHSCROLL|WS_TABSTOP,1052,184,280,26,114);
@@ -654,7 +667,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SendMessageW(logView,EM_SETBKGNDCOLOR,0,theme::inset);SetWindowTheme(logView,L"DarkMode_Explorer",nullptr);
         { CHARFORMAT2W style{}; style.cbSize=sizeof(style); style.dwMask=CFM_COLOR; style.crTextColor=theme::body; SendMessageW(logView,EM_SETCHARFORMAT,SCF_ALL,reinterpret_cast<LPARAM>(&style)); }
         configurationHeading=control(window,L"STATIC",L"",0,0,0,1,1);
-        versionTag=control(window,L"STATIC",L"v0.10.1",0,0,0,1,1);
+        versionTag=control(window,L"STATIC",L"v0.11.0",0,0,0,1,1);
         // Section titles, the map count and the version are painted by paintWindow; the statics keep their text.
         for (const auto hidden:{configurationHeading,mapLabel,activityLabel,mapCount,versionTag}) ShowWindow(hidden,SW_HIDE);
         for (const auto label:{clientLabel,outputLabel,taskLabel,serverLabel}) SendMessageW(label,WM_SETFONT,reinterpret_cast<WPARAM>(labelFont),TRUE);
@@ -670,6 +683,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         activityCanvas=control(window,L"911regActivity",L"",0,0,0,1,1,132);
         spinnerCanvas=control(window,L"911regSpinner",L"",0,0,0,1,1,137);
         labCanvas=control(window,L"911regLab",L"",0,0,0,1,1,138);
+        geoViewerButton=control(window,L"BUTTON",L"View Geodata",WS_TABSTOP|BS_OWNERDRAW,0,0,1,1,155);
         BOOL animation=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animation,0);animateDonut=animation!=FALSE;
         SetTimer(window,2,30,nullptr);
         std::vector<wchar_t> executable(32768);
@@ -691,7 +705,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SendMessageW(tips,TTM_SETDELAYTIME,TTDT_INITIAL,450);
         SendMessageW(tips,TTM_SETDELAYTIME,TTDT_AUTOPOP,16000);
         RECT tipMargin{14,10,14,10}; SendMessageW(tips,TTM_SETMARGIN,0,reinterpret_cast<LPARAM>(&tipMargin));
-        for (const auto& entry:std::vector<std::pair<HWND,const char*>>{{minimizeButton,"studio_minimize"},{closeButton,"studio_close"},{input,"tip_client"},{inputButton,"tip_client"},{output,"tip_output"},{outputButton,"tip_output"},{mapList,"tip_list"},{mapFilter,"tip_search"},{serverSelector,"tip_server"},{preferClassicButton,"tip_prefer_classic"},{preferNormalButton,"tip_prefer_normal"},{combineButton,"tip_combine"},{languageSelector,"tip_language"},{startButton,"tip_start"},{openButton,"tip_results"},{clearOutputButton,"tip_clear"},{logView,"tip_log"},{progressBar,"tip_log"},{taskTiles[0],"tip_doors"},{taskTiles[1],"tip_water"},{taskTiles[3],"tip_geodata"},{taskTiles[4],"tip_pathnodes"},{taskTiles[5],"tip_events"},{taskTiles[6],"tip_t3d"}}) addTip(window,entry.first,entry.second);
+        for (const auto& entry:std::vector<std::pair<HWND,const char*>>{{minimizeButton,"studio_minimize"},{closeButton,"studio_close"},{input,"tip_client"},{inputButton,"tip_client"},{output,"tip_output"},{outputButton,"tip_output"},{mapList,"tip_list"},{mapFilter,"tip_search"},{serverSelector,"tip_server"},{preferClassicButton,"tip_prefer_classic"},{preferNormalButton,"tip_prefer_normal"},{combineButton,"tip_combine"},{disregardAdjacentButton,"tip_disregard_adjacent"},{languageSelector,"tip_language"},{startButton,"tip_start"},{openButton,"tip_results"},{clearOutputButton,"tip_clear"},{logView,"tip_log"},{progressBar,"tip_log"},{taskTiles[0],"tip_doors"},{taskTiles[1],"tip_water"},{taskTiles[3],"tip_geodata"},{taskTiles[4],"tip_pathnodes"},{taskTiles[5],"tip_events"},{taskTiles[6],"tip_t3d"}}) addTip(window,entry.first,entry.second);
         if (const auto choice=reinterpret_cast<Choice*>(GetWindowLongPtrW(input,GWLP_USERDATA)); choice && choice->edit) addTip(window,choice->edit,"tip_client");
         addTip(window,countersCanvas,"studio_counters_tip");
         addTip(window,statsCanvas,"studio_rate_tip");
@@ -775,6 +789,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return reinterpret_cast<LRESULT>(edit ? field : header ? headerBrush : panel);
     }
     case WM_COMMAND:
+        if(LOWORD(wParam)==155){try{openSelectedGeodata(window);}catch(const std::exception& error){if(labJob){CloseHandle(labJob);labJob=nullptr;}if(labProcess){CloseHandle(labProcess);labProcess=nullptr;}KillTimer(window,3);EnableWindow(geoViewerButton,TRUE);EnableWindow(startButton,!process && sourceReady());EnableWindow(clearOutputButton,!process);EnableWindow(output,!process);EnableWindow(outputButton,!process);MessageBoxA(window,error.what(),"View Geodata",MB_ICONERROR);}return 0;}
         if(LOWORD(wParam)==133){ShowWindow(window,SW_MINIMIZE);return 0;}
         if(LOWORD(wParam)==134){SendMessageW(window,WM_CLOSE,0,0);return 0;}
         if(LOWORD(wParam)==130){SetWindowTextW(logView,L"");return 0;}
@@ -784,7 +799,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             for (const auto& frame:{outputFrame,searchFrame}) { RECT ring=frame; InflateRect(&ring,1,1); InvalidateRect(window,&ring,FALSE); }
             return 0;
         }
-        if (LOWORD(wParam)==125 && !process) {
+        if (LOWORD(wParam)==125 && !process && !labProcess) {
             try {
                 if (confirmClearOutput(window,std::filesystem::path(text(output)))) setText(status,"clear_ready");
             } catch (const std::exception&) { setText(status,"folder_error"); }
@@ -794,6 +809,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SendMessageW(taskSelector,CB_SETCURSEL,LOWORD(wParam)==141 ? 6 : LOWORD(wParam)==140 ? 5 : LOWORD(wParam)-120,0);
             SendMessageW(window,WM_COMMAND,MAKEWPARAM(106,CBN_SELCHANGE),reinterpret_cast<LPARAM>(taskSelector)); return 0;
         }
+        if (LOWORD(wParam)==156 && taskMode==3 && !process) { disregardAdjacentEnabled=!disregardAdjacentEnabled;savePreferences();InvalidateRect(disregardAdjacentButton,nullptr,TRUE);return 0; }
         if (LOWORD(wParam)==117 && !process) { if (taskMode==3) pathnodesEnabled=!pathnodesEnabled; else combineResults=!combineResults; savePreferences(); InvalidateRect(combineButton,nullptr,TRUE); return 0; }
         if (LOWORD(wParam)==116 && HIWORD(wParam)==CBN_SELCHANGE) {
             const auto index=SendMessageW(serverSelector,CB_GETCURSEL,0,0);
@@ -809,7 +825,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (LOWORD(wParam)==114 && HIWORD(wParam)==EN_CHANGE) { populateMapList(false); return 0; }
         if (HIWORD(wParam) == EN_CHANGE || (LOWORD(wParam) == 109 && HIWORD(wParam) == CBN_EDITCHANGE)) {
             if (LOWORD(wParam)==109 && !process && !lockMapSelection) populateMapList(true);
-            EnableWindow(startButton,!process && sourceReady() && !text(output).empty());
+            EnableWindow(startButton,!process && !labProcess && sourceReady() && !text(output).empty());
             RECT client{}; GetClientRect(window,&client); client.top=client.bottom-dp(36); InvalidateRect(window,&client,FALSE);
             return 0;
         }
@@ -820,7 +836,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 std::wstring value(size_t(length)+1,L'\0');
                 SendMessageW(input,CB_GETLBTEXT,index,reinterpret_cast<LPARAM>(value.data()));
                 SetWindowTextW(input,value.c_str()); populateMapList(true);
-                EnableWindow(startButton,!process && !text(output).empty() && sourceReady());
+                EnableWindow(startButton,!process && !labProcess && !text(output).empty() && sourceReady());
             }
             return 0;
         }
@@ -834,11 +850,13 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             EnableWindow(serverSelector,taskMode!=4 && taskMode!=5 && taskMode!=6); EnableWindow(combineButton,(taskMode<2 && selectedServer!="l2off") || taskMode==3);
             setText(combineButton,taskMode==3 ? "include_pathnodes" : "combine_xml");
             ShowWindow(combineButton,taskMode>=4 ? SW_HIDE : SW_SHOW); tipKeys[combineButton]=taskMode==3 ? "tip_pathnodes" : "tip_combine";
+        setText(disregardAdjacentButton,"disregard_adjacent");ShowWindow(disregardAdjacentButton,taskMode==3 ? SW_SHOW:SW_HIDE);EnableWindow(disregardAdjacentButton,taskMode==3 && !process);
             if (serverLabel) setText(serverLabel,taskMode==6 ? "t3d_format" : taskMode==5 ? "event_format" : taskMode==4 ? "node_format" : taskMode==3 ? "geo_format" : "server_type");
             populateServers(); EnableWindow(serverSelector,taskMode!=4 && taskMode!=5 && taskMode!=6);
             ShowWindow(capability,capabilityFits ? SW_SHOW : SW_HIDE); InvalidateRect(window,&configurationCard,FALSE);
             setText(capability,taskMode==6 ? "t3d_hint" : taskMode==5 ? "events_hint" : taskMode==4 ? "pn_hint" : "variants_hint");
-            EnableWindow(startButton,sourceReady() && !text(output).empty());
+            EnableWindow(startButton,!labProcess && sourceReady() && !text(output).empty());
+            studioLayout(window);
             return 0;
         }
         if (LOWORD(wParam) == 101) {
@@ -856,6 +874,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             consoleLine(paused ? L"PAUSE" : L"RUN",paused ? theme::amber : theme::accent,i18n::tr(paused ? "studio_paused_log" : "studio_resumed_log"),theme::body);
             InvalidateRect(startButton,nullptr,FALSE); InvalidateRect(statsCanvas,nullptr,FALSE); InvalidateRect(window,nullptr,FALSE);
         } else if (LOWORD(wParam) == 103 && !process) {
+            if(labProcess)return 0;
             if (selectedMapMode && selectedMaps.empty()) { setText(status,"no_maps"); return 0; }
             const auto chosenMaps=selectedMaps;
             lockMapSelection=true;
@@ -908,7 +927,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (combineResults && taskMode<2 && selectedServer!="l2off") command+=L" --combine-xml";
             if(taskMode!=5 && taskMode!=6)command+=L" --server "+quote(std::wstring(selectedServer.begin(),selectedServer.end()));
             if (!debugResults) command+=L" --simple-output";
-            if (taskMode==3) { command+=L" --geo "+std::wstring(geoFormat.begin(),geoFormat.end()); if (!pathnodesEnabled) command+=L" --no-pathnodes"; }
+            if (taskMode==3) { command+=L" --geo "+std::wstring(geoFormat.begin(),geoFormat.end()); if (!pathnodesEnabled) command+=L" --no-pathnodes";if(disregardAdjacentEnabled)command+=L" --disregard-adjacent-maps"; }
             if (selectedMapMode) command+=L" --map-list "+quote(selectionPath.wstring());
             STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION child{};
             SECURITY_ATTRIBUTES security{sizeof(security),nullptr,TRUE};
@@ -948,20 +967,21 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             EnableWindow(inputButton,FALSE); EnableWindow(outputButton,FALSE); EnableWindow(openButton,FALSE); EnableWindow(clearOutputButton,FALSE);
             EnableWindow(taskSelector,FALSE); EnableWindow(languageSelector,FALSE);
             for (auto tile:taskTiles) EnableWindow(tile,FALSE);
-            EnableWindow(mapFilter,FALSE); EnableWindow(serverSelector,FALSE); EnableWindow(combineButton,FALSE); EnableWindow(preferNormalButton,FALSE); EnableWindow(preferClassicButton,FALSE); EnableWindow(selectAllButton,FALSE); EnableWindow(clearMapsButton,FALSE);
+            EnableWindow(disregardAdjacentButton,FALSE);EnableWindow(mapFilter,FALSE); EnableWindow(serverSelector,FALSE); EnableWindow(combineButton,FALSE); EnableWindow(preferNormalButton,FALSE); EnableWindow(preferClassicButton,FALSE); EnableWindow(selectAllButton,FALSE); EnableWindow(clearMapsButton,FALSE);
 
             setText(status,"finding");
             SetTimer(window,1,250,nullptr);
         }
         return 0;
     case WM_TIMER:
+        if(wParam==3){try{pollLabGeneration(window);}catch(const std::exception& error){if(labJob){CloseHandle(labJob);labJob=nullptr;}if(labProcess){CloseHandle(labProcess);labProcess=nullptr;}KillTimer(window,3);EnableWindow(geoViewerButton,TRUE);EnableWindow(startButton,!process && sourceReady());EnableWindow(clearOutputButton,!process);EnableWindow(output,!process);EnableWindow(outputButton,!process);MessageBoxA(window,error.what(),"View Geodata",MB_ICONERROR);}return 0;}
         if(wParam==2){
             static ULONGLONG lastFrame=0,lastSecond=0;
             const auto now=GetTickCount64();
             if(IsIconic(window) || !IsWindowVisible(window)) { lastFrame=now; return 0; }
             const auto elapsed=lastFrame ? std::min<ULONGLONG>(now-lastFrame,100) : 0;
             lastFrame=now;
-            if(animateDonut) {
+            if(animateDonut && GetForegroundWindow()==window) {
                 donutAngle+=float(elapsed)*0.000875f;
                 InvalidateRect(activityCanvas,nullptr,FALSE);
                 if(IsWindowVisible(spinnerCanvas))InvalidateRect(spinnerCanvas,nullptr,FALSE);
@@ -996,7 +1016,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             EnableWindow(inputButton,TRUE); EnableWindow(outputButton,TRUE); EnableWindow(openButton,TRUE); EnableWindow(clearOutputButton,TRUE);
             EnableWindow(taskSelector,TRUE); EnableWindow(languageSelector,TRUE);
             for (auto tile:taskTiles) EnableWindow(tile,TRUE);
-            EnableWindow(mapList,TRUE); EnableWindow(mapFilter,TRUE); EnableWindow(serverSelector,taskMode!=4 && taskMode!=5 && taskMode!=6); EnableWindow(combineButton,(taskMode<2 && selectedServer!="l2off") || taskMode==3); EnableWindow(preferNormalButton,TRUE); EnableWindow(preferClassicButton,TRUE); EnableWindow(selectAllButton,TRUE); EnableWindow(clearMapsButton,TRUE);
+            EnableWindow(disregardAdjacentButton,taskMode==3);EnableWindow(mapList,TRUE); EnableWindow(mapFilter,TRUE); EnableWindow(serverSelector,taskMode!=4 && taskMode!=5 && taskMode!=6); EnableWindow(combineButton,(taskMode<2 && selectedServer!="l2off") || taskMode==3); EnableWindow(preferNormalButton,TRUE); EnableWindow(preferClassicButton,TRUE); EnableWindow(selectAllButton,TRUE); EnableWindow(clearMapsButton,TRUE);
             if (debugResults) {
                 std::ofstream summary(runFolder/"Summary.txt",std::ios::binary); summary<<scanLog;
             } else if (!selectionPath.empty()) { std::error_code error; std::filesystem::remove(selectionPath,error); }
@@ -1032,7 +1052,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             try { extractor::cleanupIncomplete(runFolder,taskMode); } catch (const std::exception&) {}
         }
         DestroyWindow(window); return 0;
-    case WM_DESTROY: KillTimer(window,2);if(mapChecks){ImageList_Destroy(mapChecks);mapChecks=nullptr;}PostQuitMessage(0); return 0;
+    case WM_DESTROY: extractor::closeGeodataViewer();if(labJob){CloseHandle(labJob);labJob=nullptr;}if(labProcess){CloseHandle(labProcess);labProcess=nullptr;}KillTimer(window,3);KillTimer(window,2);if(mapChecks){ImageList_Destroy(mapChecks);mapChecks=nullptr;}PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(window,message,wParam,lParam);
 }
@@ -1043,7 +1063,7 @@ int showUi() {
     std::vector<wchar_t> settingsExecutable(32768); GetModuleFileNameW(nullptr,settingsExecutable.data(),32768);
     preferencesPath=extractor::settingsFile(std::filesystem::path(settingsExecutable.data()).parent_path());
     const auto preferences=extractor::UiPreferences::load(preferencesPath);
-    selectedServer=preferences.server; combineResults=preferences.combine; debugResults=false; geoFormat=preferences.geodata; pathnodesEnabled=preferences.pathnodes;
+    selectedServer=preferences.server; combineResults=preferences.combine; debugResults=false; geoFormat=preferences.geodata; pathnodesEnabled=preferences.pathnodes;disregardAdjacentEnabled=preferences.disregardAdjacent;
     // The window never writes debug files. The verify path still does, unless the simple-output check is running.
     if (verifying && previewPath.empty() && !verificationSimple) { selectedServer="all"; combineResults=false; debugResults=true; }
     if (verificationSimple) { selectedServer="l2jserver"; combineResults=true; debugResults=false; }
@@ -1119,6 +1139,9 @@ int showUi() {
             if(IsDialogMessageW(detailsPanel.window,&message))continue;
             TranslateMessage(&message);DispatchMessageW(&message);continue;
         }
+        if(extractor::handleGeodataViewerMessage(message))continue;
+        if(message.message==WM_KEYDOWN && message.wParam=='G' && (GetKeyState(VK_CONTROL)&0x8000)){SendMessageW(window,WM_COMMAND,155,0);continue;}
+        if(message.hwnd!=window && !IsChild(window,message.hwnd)){TranslateMessage(&message);DispatchMessageW(&message);continue;}
         focusInput(window,message);
         if(message.message==WM_KEYDOWN && message.wParam==VK_RETURN && (GetKeyState(VK_CONTROL)&0x8000) && !process){SendMessageW(window,WM_COMMAND,103,0);continue;}
         if (!IsDialogMessageW(window,&message)) { TranslateMessage(&message); DispatchMessageW(&message); }

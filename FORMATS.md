@@ -55,7 +55,7 @@ units merge. Mesh rises use an unquantized surface-rise limit of 16.32; terrain 
 45.573 degrees and slope 0.3, with a 3.125 surface rise before that slope is
 considered. Exposed column tops and floors reachable from them or a PlayerStart are retained; disconnected lower layers are removed. This does not prove that every retained roof is accessible, and isolated areas entered only by teleport need a suitable seed. Unknown cells are closed at -16352. A flat block is emitted only when all 64 cells have the same height and all directions open. Exact flat serialization preserves the canonical cell heights. Generation first compacts fully open single-floor blocks spanning at most 32 units, changing each height by at most 24. `--exact-heights` disables that generation-only approximation.
 
-Client surface offsets are the default; `--world-heights` exposes raw surfaces for diagnostics. Edge directions are validated against the neighbouring map's collision (same variant); missing neighbours are closed. Only boundary blocks are rasterized for neighbours and a bounded cache avoids retaining whole clients.
+Client surface offsets are the default; `--world-heights` exposes raw surfaces for diagnostics. Edge directions are validated against the neighbouring map's collision (normal for normal maps; Classic first, then normal fallback for Classic maps); missing adjacent maps leave outward NSWE directions open. Only boundary blocks are rasterized for neighbours and a bounded cache avoids retaining whole clients.
 
 L2OFF uses an 18-byte header: byte region X/Y, word 128, word 16, dword stored
 nonflat layer count, dword flat+complex block count, dword flat block count.
@@ -73,6 +73,14 @@ their runtime/editor code is not included in the executable:
 Proprietary/compressed variants and live gameplay validation remain pending.
 This is not a claim of compatibility with every
 historical or custom loader.
+
+Actor collision defaults and inheritance are read from the selected client's
+serialized class packages, then overridden by the map actor. Class defaults are
+cached by decoded-package SHA-256 and schema, with a payload checksum; source
+package ownership is preserved for inherited object references. Volume classes
+are recognized through inheritance. Unknown class layouts and unsupported native
+blocking primitives fail extraction. Dynamic script-driven collision changes are
+not replayed. Standalone door/water exporters still use their existing defaults.
 
 Native collision is decoded independently from client packages. The level's
 native actor database identifies live map actors; its model reference selects
@@ -99,7 +107,7 @@ neighbours using the existing movement links and headroom checks.
 Native layouts are bounded to the supported UE2 package profiles. Missing
 static-mesh packages exclude affected actors with warnings. Missing required
 terrain/model assets, malformed relevant arrays and unrecognized potentially
-blocking mesh subclasses remain errors, preventing publication of that tile. Doors and animated/nonstatic meshes are excluded from the static
+blocking primitives remain errors, preventing publication of that tile. Doors and animated/nonstatic meshes are excluded from the static
 environment and counted in per-map reports. No editor code, executable,
 renderer, headers or runtime is linked or shipped with the extractor.
 

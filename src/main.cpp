@@ -1,3 +1,6 @@
+#include "geodata_viewer.h"
+#include "geodata_document.h"
+#include "class_database.h"
 #include "cpu_workers.h"
 #include "package.h"
 #include "doors.h"
@@ -101,6 +104,9 @@ static unsigned threads(const std::string& value) {
 // doors, water and geodata refuse an output path that already exists.
 static int run(int argc, wchar_t** argv) {
     if (argc == 1) return showUi();
+    if ((argc==2 || argc==3) && std::wstring(argv[1])==L"--view-geodata") return extractor::runGeodataViewer(argc==3 ? fs::path(argv[2]):fs::path{});
+    if (argc==3 && std::wstring(argv[1])==L"--verify-geodata-viewer") return extractor::viewer::verifyDocument(argv[2]);
+    if (argc==3 && std::wstring(argv[1])==L"--verify-geodata-viewport") return extractor::verifyGeodataViewport(argv[2]);
     if (argc==3 && std::wstring(argv[1])==L"--verify-map-selection") {
         for (const auto& name:{L"22_22.unr",L"22_22_Classic.unr",L"01_09_CLASSIC.unr"}) if (!extractor::regionMap(name)) throw std::runtime_error("Region map rejected");
         for (const auto& name:{L"sky.unr",L"lobby.unr",L"22_22_sky.unr",L"2_22.unr",L"122_22.unr"}) if (extractor::regionMap(name)) throw std::runtime_error("Non-region map accepted");
@@ -183,6 +189,7 @@ static int run(int argc, wchar_t** argv) {
         }
         std::cout<<"Direct output paths and scoped clearing passed\n"; return 0;
     }
+    if (argc == 3 && std::wstring(argv[1]) == L"--verify-class-defaults") return extractor::verifyClassDatabase(argv[2]);
     if (argc == 3 && std::wstring(argv[1]) == L"--verify-collision") return extractor::collision::verify(argv[2]);
     if (argc == 3 && std::wstring(argv[1]) == L"--inspect-collision") return extractor::collision::inspect(argv[2]);
     if (argc == 3 && std::wstring(argv[1]) == L"--check-collision") {
@@ -226,12 +233,12 @@ static int run(int argc, wchar_t** argv) {
         std::cout << "Language checks passed: " << i18n::languages().size() << '\n'; return 0;
     }
     if (std::wstring(argv[1]) == L"--help") {
-        std::cout << "911reg MapExtractor 0.10.1 | CPU only\n"
+        std::cout << "911reg MapExtractor 0.11.0 | CPU only\n"
             << "MapExtractor scan <client-folder-or-map.unr> --output <manifest.json> [--threads 1..64]\n"
             << "MapExtractor doors <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
             << "MapExtractor water <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
             << "MapExtractor pathnodes <client-folder-or-map.unr> --output <new-folder> [--threads 1..64]\n"
-            << "Geodata includes Pathnodes/*.pn. --no-pathnodes disables them. --world-heights disables client surface offsets for diagnostics.\n"
+            << "Geodata includes Pathnodes/*.pn. --no-pathnodes disables them. --disregard-adjacent-maps skips neighbour loading and seam validation, leaves outward borders open and extends terrain edges flat. --world-heights disables client surface offsets for diagnostics.\n"
             << "MapExtractor t3d <client-folder-or-map.unr> --output <new-folder> [--threads 1..64] [--classic]\n"
             << "MapExtractor events <client-folder-or-map.unr> --output <new-folder> [--threads 1..64] [--classic]\n"
             << "MapExtractor geodata <client-folder-or-map.unr> --output <new-folder> [--threads 1..64] [--classic]\n"
@@ -268,6 +275,7 @@ static int run(int argc, wchar_t** argv) {
         const std::wstring option = argv[i];
         if (option == L"--no-collision-cache") { extractor::useCollisionCache=false; continue; }
         if (option == L"--exact-heights") { extractor::compactGeodata=false; continue; }
+        if (option == L"--disregard-adjacent-maps") { extractor::disregardAdjacentMaps=true; continue; }
         if (option == L"--no-pathnodes") { extractor::emitPathnodes=false; continue; }
         if (option == L"--walking-only") { extractor::airReachability=false; continue; }
         if(option==L"--air-radius" || option==L"--air-half-height") {
@@ -277,6 +285,12 @@ static int run(int argc, wchar_t** argv) {
             if(option==L"--air-radius")extractor::air::radius=dimension;
             else extractor::air::halfHeight=dimension;
             continue;
+        }
+        if(option==L"--trace-cell") {
+            if(++i>=argc || extractor::cellTracePoints.size()>=16)throw std::runtime_error("--trace-cell requires X,Y cell indices; maximum 16 cells");
+            std::istringstream value(pathText(fs::path(argv[i])));int x=0,y=0;char separator=0;
+            if(!(value>>x>>separator>>y) || separator!=',' || !value.eof() || x<0 || y<0 || x>=2048 || y>=2048)throw std::runtime_error("--trace-cell requires X,Y cell indices in 0..2047");
+            extractor::cellTracePoints.emplace_back(x,y);continue;
         }
         if(option==L"--trace-air") {
             if(++i>=argc || extractor::airTracePoints.size()>=16)throw std::runtime_error("--trace-air requires X,Y,Z; maximum 16 points");

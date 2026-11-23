@@ -1,6 +1,7 @@
 // Water from Gameplay.WaterVolume and Engine.WaterVolume brushes. Other volumes are ignored.
 // Sloped or incomplete brushes are reported. They are not replaced with a bounding box.
 #include "water.h"
+#include "class_database.h"
 #include "l2off.h"
 #include "package.h"
 #include "export_utils.h"
@@ -476,23 +477,26 @@ static bool bspWaterContains(const WaterGeometry& zone,double x,double y,double 
     }
     return !outside;
 }
-static std::vector<WaterGeometry> nativeWater(const Package& package) {
+static std::vector<WaterGeometry> nativeWater(const std::shared_ptr<Package>& source,ClientClasses& classes) {
+    const auto& package=*source;
     std::vector<WaterGeometry> result;
     for(const auto i:collision::liveActors(package)) {
-        const auto type=package.className(i);const auto ps=package.properties(i);
+        const auto type=package.className(i);const auto actor=classes.actor(source,i);const auto& ps=actor.properties;
         if(const auto deleted=property(ps,"bDeleteMe");deleted && deleted->boolean)continue;
+        if(!actor.isA("Engine.PhysicsVolume"))continue;
         const bool wet=isWater(type,ps);
-        if(!wet && type.find("PhysicsVolume")==std::string::npos && type.find("AirVolume")==std::string::npos && type.find("WaterVolume")==std::string::npos)continue;
-        if(!wet && !property(ps,"Brush"))continue;
+        const auto brush=property(ps,"Brush");if(!brush)throw std::runtime_error("Physics volume has no resolved brush property: "+package.exports[i].name);
+        Reader reference{brush->value};if(!reference.compact()){if(wet)throw std::runtime_error("Water volume has no brush model");continue;}
+        const auto brushContext=actor.context("Brush");
         try {
-            const auto faces=waterFaces(package,ps);
+            const auto faces=waterFaces(*brushContext,ps);
             try {
                 for(const auto& zone:prism(faces,package.exports[i].name,package.exports[i].name,true)) {
                     WaterGeometry out;out.low=zone.low;out.high=zone.high;out.priority=priority(ps,type);out.wet=wet;
                     for(const auto p:zone.polygon)out.polygon.push_back({p.x,p.y,p.z});result.push_back(std::move(out));
                 }
             } catch(const UnsupportedWaterPrism&) {
-                auto out=bspWater(package,ps);out.priority=priority(ps,type);out.wet=wet;result.push_back(std::move(out));
+                auto out=bspWater(*brushContext,ps);out.priority=priority(ps,type);out.wet=wet;result.push_back(std::move(out));
             }
         } catch(const std::exception& error) {throw std::runtime_error(package.exports[i].name+" ("+type+"): "+error.what());}
     }
@@ -515,14 +519,8 @@ bool waterAt(const std::vector<WaterGeometry>& zones,double x,double y,double z)
     return wet && (!dry || wetRank>dryRank);
 }
 std::vector<WaterGeometry> readWaterGeometry(const std::filesystem::path& map) {
-    const auto package=Package::open(map);
-    try {
-        const auto zones=effectiveWater(package);std::vector<WaterGeometry> result;
-        for(const auto& zone:zones){WaterGeometry out;out.low=zone.low;out.high=zone.high;for(const auto p:zone.polygon)out.polygon.push_back({p.x,p.y,p.z});result.push_back(std::move(out));}
-        return result;
-    } catch(const UnsupportedWaterPrism&) {
-        return nativeWater(package);
-    }
+    auto package=std::make_shared<Package>(Package::open(map));ClientClasses classes(map);
+    return nativeWater(package,classes);
 }
 
 int verifyWaterCore() {

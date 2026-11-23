@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <bitset>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -57,6 +58,7 @@ struct Geo {
     std::vector<V> zoneSeeds;
     bool boundaryOnly=false;
     bool airBounded=false;
+    std::array<bool,4> openMissingEdges{};
     std::atomic<size_t> rejectedHeights{0};
     std::map<std::pair<int,int>,Cell> halo;
     std::array<std::vector<uint32_t>, 65536> index;
@@ -166,7 +168,7 @@ void buildIndex(Geo& geo) {
 }
 
 template<class Work>
-void parallel(unsigned workers, Work work, const char* stage = nullptr) {
+void parallel(unsigned workers, Work work, const char* stage = nullptr,size_t total=65536) {
     std::atomic<size_t> next{0}, completed{0};
     std::exception_ptr failure;
     std::mutex guard;
@@ -175,18 +177,18 @@ void parallel(unsigned workers, Work work, const char* stage = nullptr) {
         try {
             for (;;) {
                 const auto block = next.fetch_add(1);
-                if (block >= 65536) break;
+                if (block >= total) break;
                 work(block);
                 const auto done = completed.fetch_add(1) + 1;
                 if (stage && done % 8192 == 0) {
                     std::lock_guard lock(guard);
-                    std::cerr << "STAGE " << stage << " | blocks " << done << "/65536\n";
+                    std::cerr << "STAGE " << stage << " | blocks " << done << "/" << total << "\n";
                 }
             }
         } catch (...) {
             std::lock_guard lock(guard);
             if (!failure) failure = std::current_exception();
-            next = 65536;
+            next = total;
         }
     });
     pool.clear();
@@ -234,7 +236,7 @@ struct Sample {
     float z = 0;
     unsigned char kind = 0;
     bool steep = false,center=true,surface=true;
-    uint32_t object=0; bool closed=false,spanOnly=false,walkSupport=false; float ray=0; int direction=0;
+    uint32_t object=0; bool closed=false,spanOnly=false,walkSupport=false; float ray=0; int direction=0;bool vertical=false;
 };
 
 float sampleHeight(const Sample& sample, bool top) {
@@ -295,7 +297,7 @@ void addSample(std::vector<Sample>& samples, const Triangle& triangle, float x0,
     const int smin = int(std::floor(lo));
     const int smax = std::max(smin + 1, int(std::ceil(hi)));
     Sample sample{smin,smax,z,triangle.kind,steep,center,triangle.normal.z>=-1e-8};
-    sample.object=triangle.object; sample.closed=triangle.closed;
+    sample.object=triangle.object; sample.closed=triangle.closed;sample.vertical=std::abs(triangle.normal.z)<=1e-8;
     sample.direction=triangle.normal.z>1e-8 ? 1 : triangle.normal.z<-1e-8 ? -1 : 0;
     if ((sample.closed && sample.direction) || (!sample.steep && sample.direction>0 && sample.kind!=1)) {
         const double x=double(x0)+8,y=double(y0)+8;
@@ -320,19 +322,28 @@ void addCylinderSample(std::vector<Sample>& samples,const collision::Cylinder& s
 }
 
 void rasterize(Geo& geo, unsigned workers) {
-    geo.rejectedHeights=0;
+    geo.rejectedHeights=0;std::mutex traceGuard;
     parallel(workers, [&](size_t blockIndex) {
         const auto cylinders=geo.cylinderIndex.find(blockIndex);
         if (geo.index[blockIndex].empty() && cylinders==geo.cylinderIndex.end()) return;
         auto block = std::make_unique<Block>();
         bool used = false;
         size_t rejected=0;
+        std::vector<Sample> samples;
+        struct Span { int smin,smax; };
+        std::vector<Span> spans;
         for (int x = 0; x < 8; ++x) for (int y = 0; y < 8; ++y) {
             const float x0 = float(geo.ox + (double(blockIndex / 256) * 8 + x) * 16);
             const float y0 = float(geo.oy + (double(blockIndex % 256) * 8 + y) * 16);
-            std::vector<Sample> samples;
+            samples.clear();spans.clear();
+            const std::pair<int,int> traceKey{int(blockIndex/256)*8+x,int(blockIndex%256)*8+y};
+            const bool tracing=std::find(cellTracePoints.begin(),cellTracePoints.end(),traceKey)!=cellTracePoints.end();
+            std::unique_ptr<std::ostringstream> trace;if(tracing){trace=std::make_unique<std::ostringstream>();trace->precision(12);}
+
             for (auto ref : geo.index[blockIndex]) {
-                addSample(samples, geo.triangles[ref], x0, y0);
+                const auto before=samples.size();addSample(samples, geo.triangles[ref], x0, y0);
+                if(tracing && samples.size()>before){const auto& t=geo.triangles[ref];const auto& sample=samples.back();*trace<<"CELLTRACE sample "<<traceKey.first<<','<<traceKey.second<<" triangle="<<ref<<" kind="<<int(t.kind)<<" object="<<t.object<<" z="<<sample.z<<" min="<<sample.smin<<" max="<<sample.smax<<" steep="<<sample.steep<<" support="<<sample.walkSupport<<" center="<<sample.center<<" normal="<<t.normal.x<<','<<t.normal.y<<','<<t.normal.z<<" a="<<t.a.x<<','<<t.a.y<<','<<t.a.z<<" b="<<t.b.x<<','<<t.b.y<<','<<t.b.z<<" c="<<t.c.x<<','<<t.c.y<<','<<t.c.z<<'\n';}
+
                 if (samples.size() > 4096) throw std::runtime_error("Cell collision complexity exceeds budget");
             }
             if(cylinders!=geo.cylinderIndex.end())for(auto ref:cylinders->second) {
@@ -358,8 +369,7 @@ void rasterize(Geo& geo, unsigned workers) {
                 return a.smin < b.smin || (a.smin == b.smin && a.smax < b.smax);
             });
             // Solid extents merge when the next one starts within 3 units. A gap under 46 units of headroom drops the lower span.
-            struct Span { int smin, smax; };
-            std::vector<Span> spans;
+
             for (const auto& sample : samples) {
                 if (!spans.empty() && sample.smin <= spans.back().smax + mergeGap) spans.back().smax = std::max(spans.back().smax, sample.smax);
                 else spans.push_back({sample.smin, sample.smax});
@@ -398,13 +408,14 @@ void rasterize(Geo& geo, unsigned workers) {
                 layer.steep = top && top->steep;
                 if(layer.steep && top->kind!=1)for(const auto& sample:samples) {
                     if(!sample.walkSupport || sample.kind==1 || sample.smin<spans[i].smin-1 || sample.smax>spans[i].smax+1)continue;
-                    if(top->z-sample.z<=mergeGap){layer.steep=false;break;}
+                    if(top->z-sample.z<=(top->vertical ? 16.32f:float(mergeGap))){layer.steep=false;break;}
                 }
                 layer.terrain = top && top->kind == 1;
                 if(layer.floor+headroom<terrainHeight && collision::terrainZone(geo.world,{double(x0)+8,double(y0)+8,double(layer.floor)+headroom/2.}))layer.airAllowed=false;
                 cell.push_back(layer);
             }
             if (cell.size() > 125) throw std::runtime_error("Cell exceeds 125 L2J layers");
+            if(tracing){for(const auto& layer:cell)*trace<<"CELLTRACE raster "<<traceKey.first<<','<<traceKey.second<<" z="<<layer.z<<" surface="<<layer.surface<<" floor="<<layer.floor<<" ceiling="<<layer.ceiling<<" steep="<<layer.steep<<" terrain="<<layer.terrain<<'\n';std::lock_guard lock(traceGuard);std::cerr<<trace->str();}
             used |= !cell.empty();
         }
         if(rejected)geo.rejectedHeights.fetch_add(rejected,std::memory_order_relaxed);
@@ -475,12 +486,21 @@ void connect(Geo& geo, unsigned workers) {
             for (auto& layer : (*geo.blocks[blockIndex])[size_t(x) * 8 + y]) layer.flags=0;
             for (auto& layer : (*geo.blocks[blockIndex])[size_t(x) * 8 + y]) for (unsigned direction = 0; direction < 4; ++direction) {
                 const int nextX = cellX + dx[direction], nextY = cellY + dy[direction];
+                if((nextX<0 || nextY<0 || nextX>=2048 || nextY>=2048) && geo.openMissingEdges[direction]){layer.flags|=flags[direction];continue;}
                 const auto& neighbor = geo.cell(nextX, nextY);
                 const int index = linkedIndex(neighbor, layer);
                 if (index >= 0 && (nextX>=0 && nextY>=0 && nextX<2048 && nextY<2048 ? canStep(geo, layer, neighbor[size_t(index)], cellX, cellY, nextX, nextY) : neighbor[size_t(index)].surface-layer.surface<=16.32f)) layer.flags |= flags[direction];
             }
         }
     }, "movement links");
+}
+
+void traceMovement(const Geo& geo,const char* phase){
+    constexpr int dx[]{1,-1,0,0},dy[]{0,0,1,-1};
+    for(const auto [x,y]:cellTracePoints)for(const auto& layer:geo.cell(x,y)){
+        std::cerr<<"CELLTRACE "<<phase<<' '<<x<<','<<y<<" z="<<layer.z<<" surface="<<layer.surface<<" floor="<<layer.floor<<" ceiling="<<layer.ceiling<<" steep="<<layer.steep<<" terrain="<<layer.terrain<<" flags="<<layer.flags<<'\n';
+        for(int d=0;d<4;++d){const auto& other=geo.cell(x+dx[d],y+dy[d]);const int i=linkedIndex(other,layer);std::cerr<<"CELLTRACE step direction="<<d<<" target="<<i;if(i>=0){const auto& to=other[size_t(i)];std::cerr<<" z="<<to.z<<" surface="<<to.surface<<" rise="<<to.surface-layer.surface<<" steep="<<to.steep<<" allowed="<<(x+dx[d]>=0 && x+dx[d]<2048 && y+dy[d]>=0 && y+dy[d]<2048 ? canStep(geo,layer,to,x,y,x+dx[d],y+dy[d]):to.surface-layer.surface<=16.32f);}std::cerr<<'\n';}
+    }
 }
 
 void preserveFloors(Geo& geo) {
@@ -490,7 +510,7 @@ void preserveFloors(Geo& geo) {
 
 #include "air_reachability.inl"
 
-void keepReached(Geo& geo) {
+void keepReached(Geo& geo,unsigned workers=1) {
     for(auto& block:geo.blocks)if(block)for(auto& cell:*block) {
         std::sort(cell.begin(),cell.end(),[](const Layer& a,const Layer& b){return a.floor<b.floor;});
         for(auto& layer:cell){layer.reach=false;layer.air=false;}
@@ -534,14 +554,19 @@ void keepReached(Geo& geo) {
         }
     };
     walk();
-    if(airReachability) {
-        AirReachability air(geo);air.run();
+    bool unresolved=false;
+    if(airReachability && airTracePoints.empty())for(const auto& block:geo.blocks){
+        if(block)for(const auto& cell:*block)if(std::any_of(cell.begin(),cell.end(),[](const Layer& layer){return !layer.reach;})){unresolved=true;break;}
+        if(unresolved)break;
+    }
+    if(airReachability && (unresolved || !airTracePoints.empty())) {
+        AirReachability air(geo);air.run(workers);
         for(size_t b=0;b<geo.blocks.size();++b)if(geo.blocks[b])for(size_t c=0;c<64;++c) {
             const auto& cell=(*geo.blocks[b])[c];
             for(size_t i=0;i<cell.size();++i)if(cell[i].air)stack.push_back({int(b/256)*8+int(c/8),int(b%256)*8+int(c%8),int(i)});
         }
         walk();
-    }
+    }else if(airReachability)std::cerr<<"STAGE cylinder air | skipped; all floor candidates already reachable\n";
     for(auto& block:geo.blocks)if(block) {
         bool used=false;
         for(auto& cell:*block) {
@@ -591,33 +616,34 @@ void applyWater(Geo& geo,const std::vector<WaterGeometry>& water) {
 
 using BoundaryCache=std::map<std::filesystem::path,std::shared_ptr<Geo>>;
 void addHalo(Geo& geo,const std::filesystem::path& source,unsigned workers,BoundaryCache& cache,collision::Cache* collisionCache=nullptr) {
+    if(disregardAdjacentMaps){geo.openMissingEdges.fill(true);std::cerr<<"STAGE adjacent region | disregarded; outward movement borders open\n";return;}
     const int tx=int(geo.ox/32768)+20,ty=int(geo.oy/32768)+18;
     const bool classic=classicMap(source);
     std::map<std::wstring,std::filesystem::path> files;
     for (const auto& entry:std::filesystem::directory_iterator(source.parent_path()))
         if (!entry.is_symlink() && entry.is_regular_file() && folded(entry.path().extension().wstring())==L".unr") files.emplace(folded(entry.path().stem().wstring()),entry.path());
     for (const auto [dx,dy]:std::array<std::pair<int,int>,4>{{{1,0},{-1,0},{0,1},{0,-1}}}) {
-        auto digits=[](int n) { return (n>=0 && n<10 ? L"0" : L"")+std::to_wstring(n); };
-        auto name=digits(tx+dx)+L"_"+digits(ty+dy)+(classic ? L"_classic" : L"");
-        const auto found=files.find(name); if (found==files.end()) continue;
-        auto cached=cache.find(found->second);
+        const auto neighbour=adjacentRegion(files,tx+dx,ty+dy,classic);
+        if(neighbour.empty()){geo.openMissingEdges[dx==1 ? 0:dx==-1 ? 1:dy==1 ? 2:3]=true;std::cerr<<"STAGE adjacent region | "<<output::utf8(source.filename())<<": missing "<<tx+dx<<'_'<<ty+dy<<"; outward movement border open\n";continue;}
+        std::cerr<<"STAGE adjacent region | "<<output::utf8(source.filename())<<" -> "<<output::utf8(neighbour.filename())<<" ("<<dx<<','<<dy<<")\n";
+        auto cached=cache.find(neighbour);
         if (cached==cache.end()) {
-            std::cerr<<"MAP "<<output::utf8(found->second.filename())<<" | neighbouring boundary collision\n";
+            std::cerr<<"MAP "<<output::utf8(neighbour.filename())<<" | neighbouring boundary collision\n";
             auto edge=std::make_shared<Geo>(); edge->boundaryOnly=true; edge->ox=geo.ox+dx*32768; edge->oy=geo.oy+dy*32768;
-            const auto loaded=collisionCache ? collisionCache->read(found->second) : std::make_shared<const collision::Scene>(collision::read(found->second));
+            const auto loaded=collisionCache ? collisionCache->read(neighbour) : std::make_shared<const collision::Scene>(collision::read(neighbour));
             const auto& scene=*loaded;
-            for(const auto& note:scene.notes)std::cerr<<output::utf8(found->second.filename())<<": "<<note<<'\n';
-            for(const auto& warning:scene.warnings)std::cerr<<"WARNING: "<<output::utf8(found->second.filename())<<": "<<warning<<'\n';
-            if (!scene.errors.empty()) throw std::runtime_error("Cannot validate neighbouring map "+output::utf8(found->second.filename())+": "+scene.errors.front());
+            for(const auto& note:scene.notes)std::cerr<<output::utf8(neighbour.filename())<<": "<<note<<'\n';
+            for(const auto& warning:scene.warnings)std::cerr<<"WARNING: "<<output::utf8(neighbour.filename())<<": "<<warning<<'\n';
+            if (!scene.errors.empty()) throw std::runtime_error("Cannot validate neighbouring map "+output::utf8(neighbour.filename())+": "+scene.errors.front());
             edge->triangles=scene.triangles;edge->cylinders=scene.cylinders; dropEnclosure(edge->triangles,edge->ox,edge->oy);
             buildIndex(*edge); rasterize(*edge,workers);
-            if(edge->rejectedHeights)std::cerr<<"WARNING: "<<output::utf8(found->second.filename())<<": "<<heightRangeNotice(*edge)<<'\n';
-            applyWater(*edge,readWaterGeometry(found->second));
+            if(edge->rejectedHeights)std::cerr<<"WARNING: "<<output::utf8(neighbour.filename())<<": "<<heightRangeNotice(*edge)<<'\n';
+            applyWater(*edge,readWaterGeometry(neighbour));
             connect(*edge,workers);
             for (auto& block:edge->blocks) if (block) for (auto& cell:*block) std::sort(cell.begin(),cell.end(),[](const Layer& a,const Layer& b) { return a.z>b.z; });
             edge->triangles.clear(); edge->triangles.shrink_to_fit();edge->cylinders.clear();edge->cylinders.shrink_to_fit();edge->cylinderIndex.clear(); for (auto& bucket:edge->index) { std::vector<uint32_t>().swap(bucket); }
             if (cache.size()>=8) cache.erase(cache.begin());
-            cached=cache.emplace(found->second,std::move(edge)).first;
+            cached=cache.emplace(neighbour,std::move(edge)).first;
         }
         const auto& other=*cached->second;
         for (int across=0;across<2048;++across) for (int depth=0;depth<8;++depth) {
@@ -774,6 +800,8 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
     std::wsmatch tile;
     const std::wregex pattern(LR"(^([0-9]{1,2})_([0-9]{1,2})$)");
     if (!std::regex_match(stem, tile, pattern)) throw std::runtime_error("Geodata requires a numeric XX_YY region name");
+    const auto started=std::chrono::steady_clock::now();auto measured=started;
+    auto timing=[&](const char* stage){const auto now=std::chrono::steady_clock::now();std::cerr<<"STAGE timing | "<<output::utf8(source.filename())<<" | "<<stage<<" | "<<std::chrono::duration_cast<std::chrono::milliseconds>(now-measured).count()<<" ms\n";measured=now;};
     auto geo = std::make_unique<Geo>();
     geo->ox = (std::stoi(tile[1]) - 20) * 32768.;
     geo->oy = (std::stoi(tile[2]) - 18) * 32768.;
@@ -804,23 +832,26 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
         geo->zoneSeeds = scene.zoneSeeds;
         geo->world = scene.world;
     }
+    timing("collision import");
     dropEnclosure(geo->triangles, geo->ox, geo->oy);
     std::cerr << "STAGE spatial index | triangles=" << geo->triangles.size() << ", cylinders=" << geo->cylinders.size() << '\n';
-    buildIndex(*geo);
+    buildIndex(*geo);timing("spatial index");
     std::cerr << "STAGE rasterize floors | 16-unit spans\n";
-    rasterize(*geo, workers);
+    rasterize(*geo, workers);timing("rasterize floors");
     if(geo->rejectedHeights) {
         const auto notice=heightRangeNotice(*geo);
         std::cerr<<"WARNING: "<<output::utf8(source.filename())<<": "<<notice<<'\n';
         facts+="Warning: "+notice+'\n';
     }
     if (!fixture) { applyWater(*geo,readWaterGeometry(source)); if (cache) addHalo(*geo,source,workers,*cache,collisionCache); }
+    timing("water and adjacent maps");
     std::cerr << "STAGE movement links | headroom=46\n";
-    connect(*geo, workers);
+    connect(*geo, workers);timing("initial movement links");traceMovement(*geo,"initial");
     std::cerr << "STAGE reachable floors | outdoor air, exposed surfaces and player starts\n";
-    keepReached(*geo);
-    connect(*geo, workers);
+    keepReached(*geo,workers);timing("reachable floors and air clearance");
+    connect(*geo, workers);timing("final movement links");traceMovement(*geo,"final");
     if(compactGeodata) std::cerr<<"STAGE compact open blocks | "<<compactFloors(*geo)<<" adjusted heights, maximum 24 units\n";
+    timing("compact floors");
     size_t count = 0;
     for (const auto& block : geo->blocks) if (block) for (const auto& cell : *block) count += cell.size();
     if (!count) throw std::runtime_error("No walkable cells in the selected tile; no geodata published");
@@ -851,8 +882,10 @@ static int generateTile(const std::filesystem::path& input, const std::filesyste
         + "Air reachability: " + (airReachability ? "enabled\n" : "disabled (--walking-only)\n")
         + "Native UE2 client collision; dynamic doors are exported separately. Test movement before replacing a live server.\n"
         + "Settings: cell 16, height unit 8, client surface offsets by default (raw surfaces only with --world-heights), truncate toward zero, headroom 46, mesh surface step 16.32, steep climb 3.125, walk angle 45.573.\n"
-        + "Lower floors are retained when connected to outdoor air through adjacent collision spans with at least 46 units of shared headroom, or by a movement route from an exposed surface or PlayerStart. Air uses an upright cylinder (radius " + std::to_string(air::radius) + ", half-height " + std::to_string(air::halfHeight) + ", margin 0.01), active BSP-bound ZoneInfo/PlayerStart positions and exposed sky. It stays within BSP zones, validates continuous horizontal sweeps and vertical clearance, and does not grant walking links. Empty columns are not seeds. Unsupported body coverage at native region edges stays closed for air additions. These are configurable flight-clearance dimensions, not a measured native wyvern hull. Sealed unseeded lower spans remain excluded. Movement uses unquantized surface rise and the lowest compatible neighbour span. Terrain collision is clipped to the TerrainInfo XY footprint. Missing edge vertices use matching neighbour world heights; unavailable samples extend the local edge flat with an informational message. Adjacent region collision validates movement seams; unavailable neighbours stay closed. Fully open single-floor blocks may be compacted with height changes bounded to 24 units; --exact-heights disables this. Empty cells are closed at -16352.\n"
+        + "Lower floors are retained when connected to outdoor air through adjacent collision spans with at least 46 units of shared headroom, or by a movement route from an exposed surface or PlayerStart. Air uses an upright cylinder (radius " + std::to_string(air::radius) + ", half-height " + std::to_string(air::halfHeight) + ", margin 0.01), active BSP-bound ZoneInfo/PlayerStart positions and exposed sky. It stays within BSP zones, validates continuous horizontal sweeps and vertical clearance, and does not grant walking links. Empty columns are not seeds. Unsupported body coverage at native region edges stays closed for air additions. These are configurable flight-clearance dimensions, not a measured native wyvern hull. Sealed unseeded lower spans remain excluded. Movement uses unquantized surface rise and the lowest compatible neighbour span. Terrain collision is clipped to the TerrainInfo XY footprint. Missing edge vertices use matching neighbour world heights; unavailable samples extend the local edge flat with an informational message. Adjacent region collision validates movement seams; Classic neighbours fall back to normal maps when no Classic alternative exists. Missing adjacent maps leave outward NSWE links open. Fully open single-floor blocks may be compacted with height changes bounded to 24 units; --exact-heights disables this. Empty cells are closed at -16352.\n"
         + "Formats: " + (geodataFormat == "l2j" ? "L2J/*.l2j" : geodataFormat == "l2off" ? "L2OFF/*_conv.dat" : "L2J/*.l2j and L2OFF/*_conv.dat") + ". Four cardinal directions. No live client/server files modified.\n");
+    timing("serialization and publishing");
+    std::cerr<<"STAGE timing | "<<output::utf8(source.filename())<<" | total | "<<std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count()<<" ms\n";
     std::cerr << (pathnodesOnly ? "Pathnodes complete: " : "Geodata complete: ") << count << " layers; " << (geodataFormat == "l2j" ? "L2J" : geodataFormat == "l2off" ? "L2OFF" : "L2J, L2OFF") << ".\n";
     return 0;
 }
@@ -1089,6 +1122,16 @@ int verifyGeodata() {
     require(canStep(*bevel,approach,bevel->cell(0,0)[0],0,0,1,0));
     require(canStep(*bevel,bevel->cell(0,0)[0],approach,1,0,0,0));
     require(!canStep(*bevel,approach,bevel->cell(1,0)[0],0,0,1,0));
+    for(const double rise:{8.,16.,24.})for(const bool support:{false,true}){
+        auto steps=std::make_unique<Geo>();
+        auto add=[&](V a,V b,V c){auto t=shape(a,b,c);t.kind=3;steps->triangles.push_back(t);};
+        if(support){add({0,0,0},{128,0,0},{128,64,0});add({0,0,0},{128,64,0},{0,64,0});}
+        add({32,0,0},{32,64,0},{32,64,rise});add({32,0,0},{32,64,rise},{32,0,rise});
+        buildIndex(*steps);rasterize(*steps,2);connect(*steps,2);
+        const auto& target=steps->cell(1,1);require(target.size()==1);
+        require(target[0].steep==(!support || rise>16.32));
+        if(support)require(bool(steps->cell(0,1)[0].flags&1)==(rise<=16.32));
+    }
     auto doorway=std::make_unique<Geo>();doorway->blocks[0]=std::make_unique<Block>();doorway->occupied.set();
     for(int x=0;x<5;++x) {
         Layer lower;lower.surface=200;lower.floor=200;lower.z=200;lower.ceiling=x==1 ? 250 : x==3 ? 245 : 350;

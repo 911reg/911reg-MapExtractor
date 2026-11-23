@@ -3,6 +3,7 @@
 // and left out. A tile with a missing package or an unsupported blocking class
 // is not published. Render triangles are never used as a stand-in.
 #include "collision.h"
+#include "class_database.h"
 #include "package.h"
 #include "map_selection.h"
 #include <algorithm>
@@ -38,6 +39,9 @@ int reference(const Properties& ps,const std::string& name) {
 bool flag(const Properties& ps,const std::string& name,bool fallback) {
     const auto p=prop(ps,name); if (!p) return fallback;
     if (p->kind!=3) throw std::runtime_error("Invalid collision boolean: "+name); return p->boolean;
+}
+bool terrainBlocks(const Properties& ps) {
+    return !flag(ps,"bDeleteMe",false) && flag(ps,"bWorldGeometry",false);
 }
 int integer(const Properties& ps,const std::string& name,int fallback=0) {
     const auto p=prop(ps,name); if (!p) return fallback;
@@ -83,6 +87,7 @@ public:
     explicit MissingMeshAsset(const std::string& message):std::runtime_error(message){}
 };
 class Files {
+    ClientClasses classes;
     std::filesystem::path root;
     std::map<std::wstring,std::vector<std::filesystem::path>> paths;
     std::map<std::filesystem::path,std::shared_ptr<Package>> cache;
@@ -91,7 +96,7 @@ class Files {
     uint64_t clock=0;
 public:
     size_t hits=0,misses=0;
-    explicit Files(const std::filesystem::path& map,size_t limit=256ull*1024*1024):cacheLimit(limit) {
+    explicit Files(const std::filesystem::path& map,size_t limit=256ull*1024*1024):classes(map),cacheLimit(limit) {
         root=std::filesystem::canonical(map).parent_path();
         const auto clientRoot=[](const std::filesystem::path& folder) {
             return std::filesystem::is_directory(folder/"System") || (std::filesystem::is_directory(folder/"Maps") && std::filesystem::is_directory(folder/"StaticMeshes") && std::filesystem::is_directory(folder/"Textures"));
@@ -127,6 +132,8 @@ public:
         return p;
     }
 
+    CollisionActor actor(const std::shared_ptr<Package>& p,size_t i) {return classes.actor(p,i);}
+    std::string classSummary() const {return classes.summary();}
     Object resolve(const std::shared_ptr<Package>& p,int ref,const std::string& expected) {
         if (!ref) throw std::runtime_error("Missing "+expected+" reference");
         if (ref>0) {
@@ -184,16 +191,16 @@ struct Transform {
 };
 // BSP model. Vectors are skipped. Points, nodes, surface flags and the vertex pool are read.
 // NotSolid (0x8) and Portal (0x04000000) faces are dropped. Winding follows the node plane.
-std::vector<Triangle> model(const Object& object,WorldBsp* world=nullptr) {
+std::vector<Triangle> model(const Object& object,WorldBsp* world=nullptr,Files* files=nullptr,bool visual=false) {
     const auto& p=*object.package; auto r=native(p,object.index); r.skip(41);
     auto n=count(r,12); r.skip(n*12); n=count(r,12); std::vector<Point> points;
     for (size_t i=0;i<n;++i) points.push_back(point(r));
-    struct Node { int first=0,surf=0; unsigned vertices=0; Point normal; };
+    struct Node { int first=0,surf=0; unsigned vertices=0; Point normal;uint8_t zones[2]{}; };
     std::vector<Node> nodes; n=count(r,64,2000000);
     for (size_t i=0;i<n;++i) {
         Node node; BspNode branch; node.normal=point(r);branch.normal=node.normal;branch.distance=scalar(r);r.skip(8);const auto nodeFlags=r.byte();node.first=r.compact();node.surf=r.compact();
         branch.children[0]=r.compact();branch.children[1]=r.compact();
-        for(int j=0;j<3;++j)r.compact();r.skip(32);branch.zones[0]=r.byte();branch.zones[1]=r.byte();node.vertices=r.byte();r.skip(20);nodes.push_back(node);
+        for(int j=0;j<3;++j)r.compact();r.skip(32);branch.zones[0]=r.byte();branch.zones[1]=r.byte();node.zones[0]=branch.zones[0];node.zones[1]=branch.zones[1];node.vertices=r.byte();r.skip(20);nodes.push_back(node);
         branch.solid=node.vertices && !(nodeFlags&0x21);if(world)world->nodes.push_back(branch);
     }
     std::vector<unsigned> flags; n=count(r,20);
@@ -209,11 +216,11 @@ std::vector<Triangle> model(const Object& object,WorldBsp* world=nullptr) {
     std::vector<int> pool; n=count(r,2); for (size_t i=0;i<n;++i) { pool.push_back(r.compact()); r.compact(); }
     if(world) {
         r.word();const auto zones=r.word();if(zones>64)throw std::runtime_error("Invalid world BSP zone count");
-        world->terrainZones.resize(zones);
+        world->terrainZones.resize(zones);if(visual)world->skyZones.resize(zones);
         for(size_t i=0;i<zones;++i) {
             const auto actor=r.compact();r.skip(20);
             if(actor<0 || size_t(actor)>p.exports.size())throw std::runtime_error("Invalid world BSP zone actor");
-            if(actor){world->terrainZones[i]=flag(p.properties(size_t(actor-1)),"bTerrainZone",false);world->zoneActors.push_back(uint32_t(actor));}
+            if(actor){const auto ps=files ? files->actor(object.package,size_t(actor-1)).properties : p.properties(size_t(actor-1));world->terrainZones[i]=flag(ps,"bTerrainZone",false);world->zoneActors.push_back(uint32_t(actor));if(visual && files){const auto zone=files->actor(object.package,size_t(actor-1));world->skyZones[i]=zone.isA("Engine.SkyZoneInfo") || zone.isA("Engine.L2SkyLevelZoneInfo");}}
         }
         r.compact();r.skip(count(r,25)*25);r.skip(count(r,4)*4);
         const auto leaves=count(r,11);for(size_t i=0;i<leaves;++i){r.compact();r.compact();r.compact();r.skip(8);}
@@ -242,7 +249,8 @@ std::vector<Triangle> model(const Object& object,WorldBsp* world=nullptr) {
     for (const auto& node:nodes) {
         if (node.vertices<3) continue;
         if (node.surf<0 || size_t(node.surf)>=flags.size()) throw std::runtime_error("Invalid BSP surface");
-        if (flags[node.surf]&(0x8u|0x04000000u)) continue;
+        if (flags[node.surf]&(visual ? (0x1u|0x8u|0x80u|0x04000000u):(0x8u|0x04000000u))) continue;
+        if(visual && world && ((node.zones[0]<world->skyZones.size() && world->skyZones[node.zones[0]]) || (node.zones[1]<world->skyZones.size() && world->skyZones[node.zones[1]])))continue;
         if (node.first<0 || size_t(node.first)>pool.size() || node.vertices>pool.size()-size_t(node.first)) throw std::runtime_error("Invalid BSP face span");
         auto vertex=[&](unsigned i) { const auto index=pool[size_t(node.first)+i]; if (index<0 || size_t(index)>=points.size()) throw std::runtime_error("Invalid BSP point"); return points[index]; };
         for (unsigned i=1;i+1<node.vertices;++i) {
@@ -255,7 +263,7 @@ std::vector<Triangle> model(const Object& object,WorldBsp* world=nullptr) {
 }
 // Static-mesh collision faces. UseSimpleBoxCollision with a collision Model uses that model.
 // A material slot contributes only when EnableCollision is set.
-std::vector<Triangle> mesh(Files& files,const Object& object) {
+std::vector<Triangle> mesh(Files& files,const Object& object,bool visual=false) {
     const auto& p=*object.package; auto ps=p.properties(object.index); auto r=native(p,object.index);
     std::vector<bool> collides;
     if (const auto materials=prop(ps,"Materials")) {
@@ -264,13 +272,16 @@ std::vector<Triangle> mesh(Files& files,const Object& object) {
         for (size_t i=0;i<slots;++i) collides.push_back(flag(p.tags(fields),"EnableCollision",false));
         if (fields.offset!=fields.end) throw std::runtime_error("Mesh material tag boundary mismatch");
     }
-    r.skip(41); const auto sections=count(r,14); r.skip(sections*14+25);
+    r.skip(41);const auto sections=count(r,14);struct Section{bool strip;unsigned first,primitives;};std::vector<Section> ranges;
+    if(visual){for(size_t i=0;i<sections;++i){const auto strip=r.word();const auto first=r.word(2);r.skip(6);const auto primitives=r.word(2);if(strip>1)throw std::runtime_error("Invalid static mesh strip flag");ranges.push_back({strip!=0,first,primitives});}}else r.skip(sections*14);r.skip(25);
     const auto n=count(r,24); std::vector<Point> vertices;
     for (size_t i=0;i<n;++i) { vertices.push_back(point(r)); r.skip(12); } r.skip(4);
     for (int i=0;i<2;++i) { const auto colors=count(r,4); r.skip(colors*4+4); }
     const auto uvs=count(r,1,16);
     for (size_t i=0;i<uvs;++i) { const auto entries=count(r,8); r.skip(entries*8+8); }
-    for (int i=0;i<2;++i) { const auto indices=count(r,2,16000000); r.skip(indices*2+4); }
+    std::vector<unsigned> renderIndices;
+    for (int i=0;i<2;++i) {const auto indices=count(r,2,16000000);if(visual && i==0){renderIndices.reserve(indices);for(size_t j=0;j<indices;++j)renderIndices.push_back(r.word(2));r.skip(4);}else r.skip(indices*2+4);}
+    if(visual){std::vector<Triangle> result;for(size_t slot=0;slot<ranges.size();++slot){const auto& section=ranges[slot];if(!section.primitives)continue;if(slot>=collides.size())throw std::runtime_error("Mesh render section material outside slots");if(!collides[slot])continue;const size_t step=section.strip ? 1:3;if(section.primitives && (section.first>renderIndices.size() || renderIndices.size()-section.first<3 || section.primitives>1+(renderIndices.size()-section.first-3)/step))throw std::runtime_error("Invalid mesh render index span");for(size_t i=0;i<section.primitives;++i){auto a=renderIndices[section.first+i*step],b=renderIndices[section.first+i*step+1],c=renderIndices[section.first+i*step+2];if(a>=vertices.size() || b>=vertices.size() || c>=vertices.size())throw std::runtime_error("Invalid mesh render vertex");if(a==b || b==c || a==c)continue;if(section.strip && (i&1))std::swap(a,b);triangle(result,vertices[a],vertices[b],vertices[c]);}}return result;}
     const int collisionModel=r.compact();
     if (collisionModel && flag(ps,"UseSimpleBoxCollision",true)) return model(files.resolve(object.package,collisionModel,"Engine.Model"));
     Reader probe=r; bool spans=true;
@@ -421,7 +432,7 @@ struct TerrainData {
     }
 };
 TerrainData terrainData(Files& files,const Object& object) {
-    const auto& p=*object.package; const auto ps=p.properties(object.index); auto r=native(p,object.index);
+    const auto& p=*object.package;const auto actor=files.actor(object.package,object.index);const auto& ps=actor.properties;auto r=native(p,object.index);
     const auto sectors=count(r); for (size_t i=0;i<sectors;++i) r.compact();
     if (p.licensee<18) { const auto n=count(r,12); r.skip(n*12); }
     const auto sectorsX=r.word(),sectorsY=r.word();
@@ -438,7 +449,7 @@ TerrainData terrainData(Files& files,const Object& object) {
     const size_t quadBits=size_t(quadsY-1)*width+quadsX;
     const auto visible=bitmap(ps,"QuadVisibilityBitmap",quadBits,0xffffffff),turned=bitmap(ps,"EdgeTurnBitmap",quadBits,0);
     if(!reference(ps,"TerrainMap"))return {width,height,quadsX,quadsY,origin,xAxis,yAxis,zAxis,{},visible,turned,flag(ps,"Inverted",false)};
-    const auto texture=files.resolve(object.package,reference(ps,"TerrainMap"),"Engine.Texture");
+    const auto texture=files.resolve(actor.context("TerrainMap"),reference(ps,"TerrainMap"),"Engine.Texture");
     const auto textureProps=texture.package->properties(texture.index);
     const int format=integer(textureProps,"Format"); if (format!=0 && format!=10) throw std::runtime_error("Unsupported native terrain height texture format");
     auto pixels=native(*texture.package,texture.index); materialPrefix(*texture.package,pixels); const auto mips=count(pixels,1,32);
@@ -509,11 +520,15 @@ std::vector<Triangle> clipTerrain(const Triangle& t,const std::vector<Bounds>& d
     }
     return result;
 }
-std::vector<TerrainData> mapTerrains(Files& files,const std::shared_ptr<Package>& p) {
+bool skyRegion(Files& files,const std::shared_ptr<Package>& p,const Properties& ps){
+    const auto region=prop(ps,"Region");if(!region || region->structure!="PointRegion")return false;Reader location{region->value};const auto zone=location.compact();if(zone<=0 || size_t(zone)>p->exports.size())return false;const auto actor=files.actor(p,size_t(zone-1));return actor.isA("Engine.SkyZoneInfo") || actor.isA("Engine.L2SkyLevelZoneInfo");
+}
+std::vector<TerrainData> mapTerrains(Files& files,const std::shared_ptr<Package>& p,bool visual=false) {
     std::set<size_t> actors;worldModel(*p,actors);std::vector<TerrainData> result;
-    for(auto i:actors)if(p->className(i)=="Engine.TerrainInfo") {
-        const auto ps=p->properties(i);
-        if(!flag(ps,"bDeleteMe",false) && flag(ps,"bCollideActors",true) && flag(ps,"bBlockPlayers",true))result.push_back(terrainData(files,{p,i}));
+    for(auto i:actors) {
+        const auto actor=files.actor(p,i);if(!actor.isA("Engine.TerrainInfo"))continue;
+        const auto& ps=actor.properties;
+        if(terrainBlocks(ps) && (!visual || !skyRegion(files,p,ps)))result.push_back(terrainData(files,{p,i}));
     }
     return result;
 }
@@ -545,16 +560,14 @@ std::vector<TerrainData> adjacentTerrains(Files& files,const std::filesystem::pa
     const auto stem=path.stem().wstring();const int x=std::stoi(stem.substr(0,2)),y=std::stoi(stem.substr(3,2));
     std::map<std::wstring,std::filesystem::path> available;
     for(const auto& entry:std::filesystem::directory_iterator(path.parent_path()))if(!entry.is_symlink() && entry.is_regular_file() && folded(entry.path().extension().wstring())==L".unr")available.emplace(folded(entry.path().stem().wstring()),entry.path());
-    auto digits=[](int n){return (n<10 ? L"0" : L"")+std::to_wstring(n);};
     for(int dx=-1;dx<=1;++dx)for(int dy=-1;dy<=1;++dy) {
         if((!dx && !dy) || x+dx<0 || y+dy<0)continue;
-        const auto key=digits(x+dx)+L"_"+digits(y+dy)+(classicMap(path) ? L"_classic" : L"");
-        const auto it=available.find(key);if(it==available.end())continue;
+        const auto neighbour=adjacentRegion(available,x+dx,y+dy,classicMap(path));if(neighbour.empty())continue;
         try {
-            auto terrains=cachedTerrains(files,it->second,{},cache);
+            auto terrains=cachedTerrains(files,neighbour,{},cache);
             if(terrains.empty())throw std::runtime_error("No active TerrainInfo");
             result.insert(result.end(),std::make_move_iterator(terrains.begin()),std::make_move_iterator(terrains.end()));
-        }catch(const std::exception& e){scene.warnings.push_back("Cannot use neighbouring terrain "+output::utf8(it->second.filename())+": "+e.what()+". Missing edge samples will use flat fallback.");}
+        }catch(const std::exception& e){scene.warnings.push_back("Cannot use neighbouring terrain "+output::utf8(neighbour.filename())+": "+e.what()+". Missing edge samples will use flat fallback.");}
     }
     return result;
 }
@@ -588,12 +601,12 @@ int inspect(const std::filesystem::path& path) {
 }
 // Live Level actors only. World BSP is kind 3, terrain kind 1, blocking volumes kind 2, static meshes kind 0.
 // An unrecognized actor that still blocks players fails the tile instead of being skipped.
-Scene readScene(Files& files,const std::filesystem::path& path,TerrainCache* cache=nullptr) {
+Scene readScene(Files& files,const std::filesystem::path& path,TerrainCache* cache=nullptr,bool visual=false,std::stop_token stop={}) {
     auto p=files.open(path); Scene scene;
     std::set<size_t> actors; const auto world=worldModel(*p,actors);
     std::vector<TerrainData> terrains;
     try {
-        terrains=cachedTerrains(files,path,p,cache);
+        terrains=visual ? mapTerrains(files,p,true):cachedTerrains(files,path,p,cache);
         if(terrains.empty())throw std::runtime_error("No active TerrainInfo; cannot establish extraction bounds");
         for(const auto& terrain:terrains) {
             if(std::abs(terrain.xAxis.z)>1e-9 || std::abs(terrain.yAxis.z)>1e-9 || std::abs(terrain.xAxis.y)>1e-9 || std::abs(terrain.yAxis.x)>1e-9)throw std::runtime_error("Unsupported non-axis-aligned TerrainInfo footprint");
@@ -602,7 +615,8 @@ Scene readScene(Files& files,const std::filesystem::path& path,TerrainCache* cac
             scene.bounds.push_back(bounds);
         }
     }catch(const std::exception& e){scene.errors.push_back(e.what());return scene;}
-    auto neighbours=adjacentTerrains(files,path,scene,cache);
+    auto neighbours=!visual && disregardAdjacentMaps ? std::vector<TerrainData>{}:adjacentTerrains(files,path,scene,cache);
+    if(!visual && disregardAdjacentMaps)scene.notes.push_back("Adjacent maps disregarded; terrain edges use local flat fallback and outward movement borders remain open.");
     neighbours.insert(neighbours.end(),terrains.begin(),terrains.end());
     std::map<std::string,std::vector<Triangle>> meshCache;
     auto append=[&](const std::vector<Triangle>& triangles,const Transform* matrix,unsigned char kind,uint32_t object=0) {
@@ -628,41 +642,38 @@ Scene readScene(Files& files,const std::filesystem::path& path,TerrainCache* cac
         }catch(const std::exception& e){scene.errors.push_back(std::string("Terrain stitching: ")+e.what());}
     }
     for (size_t i=0;i<p->exports.size();++i) {
+        if(visual && stop.stop_requested())throw std::runtime_error("Geometry loading cancelled");
         const auto type=p->className(i);
         try {
             if (type=="Engine.Model" && int(i+1)==world) {
-                const auto faces=model({p,i},&scene.world); append(faces,nullptr,3); scene.bsp+=faces.size(); continue;
+                const auto faces=model({p,i},&scene.world,&files,visual); append(faces,nullptr,3); scene.bsp+=faces.size(); continue;
             }
             if (!actors.contains(i)) continue;
-            if (type=="Engine.PlayerStart") {
-                const auto ps=p->properties(i); if (flag(ps,"bDeleteMe",false) || !prop(ps,"Location")) continue;
+            const auto actor=files.actor(p,i);const auto& ps=actor.properties;
+            if (actor.isA("Engine.PlayerStart")) {
+                if (flag(ps,"bDeleteMe",false) || !prop(ps,"Location")) continue;
                 const auto location=vector(ps,"Location");
                 if(std::any_of(scene.bounds.begin(),scene.bounds.end(),[&](const auto& bounds){return contains(bounds,location);}))scene.seeds.push_back(location); continue;
             }
-            if (type=="Engine.TerrainInfo") continue;
-            if (type!="Engine.StaticMeshActor" && type!="Engine.SkyMeshActor" && type!="Engine.BlockingVolume" && type!="Engine.L2BlockingVolume") {
-                if (type=="Engine.Mover" || type=="Engine.L2NMover" || type=="Engine.MovableStaticMeshActor" || type=="Engine.L2MovableStaticMeshActor") { ++scene.dynamic; continue; }
-                const auto props=p->properties(i);
-                if (flag(props,"bDeleteMe",false) || collapsed(props)) continue;
-                if ((type=="Engine.Light" || type=="Engine.Sunlight" || type=="Engine.Emitter") && !flag(props,"bCollideActors",false)) continue;
-                if (reference(props,"StaticMesh") && flag(props,"bCollideActors",true) && flag(props,"bBlockPlayers",true)) {
-                    const Transform matrix(props);
-                    const auto faces=mesh(files,files.resolve(p,reference(props,"StaticMesh"),"Engine.StaticMesh"));
-                    bool overlaps=false;
-                    for(auto face:faces) {
-                        face.a=matrix.apply(face.a);face.b=matrix.apply(face.b);face.c=matrix.apply(face.c);
-                        if(!clipTerrain(face,scene.bounds).empty()){overlaps=true;break;}
-                    }
-                    if(overlaps)throw std::runtime_error("Unsupported potentially blocking static-mesh actor class inside terrain footprint");
-                }
-                if (reference(props,"TerrainMap")) throw std::runtime_error("Unsupported terrain actor subclass");
-                continue;
+            if(actor.isA("Engine.TerrainInfo"))continue;
+            if(actor.isA("Engine.Mover") || actor.isA("Engine.L2NMover") || actor.isA("Engine.MovableStaticMeshActor") || actor.isA("Engine.L2MovableStaticMeshActor")){++scene.dynamic;continue;}
+            if(visual){
+                const bool volume=actor.isA("Engine.BlockingVolume");if(!volume && !actor.isA("Engine.StaticMeshActor"))continue;
+                if(flag(ps,"bDeleteMe",false) || (!volume && flag(ps,"bHidden",false)))continue;
+                if(skyRegion(files,p,ps))continue;
+                const Transform matrix(ps);
+                if(actor.isA("Engine.BlockingVolume")){if(!flag(ps,"bCollideActors",false) || !(flag(ps,"bBlockPlayers",false) || flag(ps,"bWorldGeometry",false)))continue;const auto brush=reference(ps,"Brush");if(brush)append(model(files.resolve(actor.context("Brush"),brush,"Engine.Model")),&matrix,2,uint32_t(i+1));continue;}
+                if(!actor.isA("Engine.StaticMeshActor"))continue;
+                const auto ref=reference(ps,"StaticMesh");if(!ref)continue;const auto context=actor.context("StaticMesh");const auto key=std::to_string(reinterpret_cast<uintptr_t>(context.get()))+":"+context->objectPath(ref);auto found=meshCache.find(key);
+                if(found==meshCache.end())found=meshCache.emplace(key,mesh(files,files.resolve(context,ref,"Engine.StaticMesh"),true)).first;
+                append(found->second,&matrix,0,uint32_t(i+1));continue;
             }
-            const auto ps=p->properties(i);
-            if (flag(ps,"bDeleteMe",false) || !flag(ps,"bCollideActors",true) || !flag(ps,"bBlockPlayers",true)) continue;
-            if ((type=="Engine.StaticMeshActor" || type=="Engine.SkyMeshActor") && !flag(ps,"bStatic",type!="Engine.SkyMeshActor")) { ++scene.dynamic; continue; }
+            if(flag(ps,"bDeleteMe",false) || !flag(ps,"bCollideActors",false) || !(flag(ps,"bWorldGeometry",false) || flag(ps,"bBlockPlayers",false)) || !flag(ps,"bBlockNonZeroExtentTraces",false))continue;
+            if(flag(ps,"bClassBlocker",false))throw std::runtime_error("Class-filtered blocking requires native collision handling");
+            if(const auto blocked=prop(ps,"BlockedClasses")){Reader list{blocked->value};if(list.compact())throw std::runtime_error("Class-filtered blocking requires native collision handling");}
+            if(!flag(ps,"bStatic",false)){++scene.dynamic;if(actor.isA("Engine.Volume"))scene.notes.push_back("Excluded nonstatic blocking volume "+p->exports[i].name+" ("+type+"); dynamic collision is not baked into geodata.");continue;}
             if (collapsed(ps)) continue;
-            if ((type=="Engine.StaticMeshActor" || type=="Engine.SkyMeshActor") && flag(ps,"bUseCylinderCollision",false)) {
+            if(flag(ps,"bUseCylinderCollision",false)) {
                 auto shape=cylinder(ps,uint32_t(i+1));
                 for(const auto& bounds:scene.bounds)if(cylinderHits(shape,bounds)) {
                     auto clipped=shape;clipped.bounds=bounds;scene.cylinders.push_back(clipped);
@@ -671,14 +682,17 @@ Scene readScene(Files& files,const std::filesystem::path& path,TerrainCache* cac
                 continue;
             }
             const Transform matrix(ps);
-            if (type!="Engine.StaticMeshActor" && type!="Engine.SkyMeshActor") {
-                const auto faces=model(files.resolve(p,reference(ps,"Brush"),"Engine.Model")); append(faces,&matrix,2); scene.volumes+=faces.size(); continue;
+            if(actor.isA("Engine.Volume")) {
+                const int brush=reference(ps,"Brush");if(!brush)throw std::runtime_error("Blocking volume has no brush model");
+                const auto faces=model(files.resolve(actor.context("Brush"),brush,"Engine.Model"));append(faces,&matrix,2);scene.volumes+=faces.size();continue;
             }
-            const int ref=reference(ps,"StaticMesh"); if (!ref) continue;
-            const auto key=p->objectPath(ref);
+            const int ref=reference(ps,"StaticMesh");
+            if(!ref)throw std::runtime_error("Unsupported blocking actor primitive (neither volume, cylinder nor static mesh)");
+            const auto context=actor.context("StaticMesh");
+            const auto key=std::to_string(reinterpret_cast<uintptr_t>(context.get()))+":"+context->objectPath(ref);
             auto found=meshCache.find(key);
             if (found==meshCache.end()) {
-                const auto object=files.resolve(p,ref,"Engine.StaticMesh");
+                const auto object=files.resolve(context,ref,"Engine.StaticMesh");
                 auto faces=mesh(files,object);
                 const bool closed=closedMesh(faces); for (auto& face:faces) face.closed=closed;
                 found=meshCache.emplace(key,std::move(faces)).first;
@@ -692,18 +706,24 @@ Scene readScene(Files& files,const std::filesystem::path& path,TerrainCache* cac
     }
     auto zoneActors=scene.world.zoneActors;std::sort(zoneActors.begin(),zoneActors.end());zoneActors.erase(std::unique(zoneActors.begin(),zoneActors.end()),zoneActors.end());
     for(const auto ref:zoneActors)if(ref && actors.contains(size_t(ref-1))) {
-        const auto type=p->className(size_t(ref-1));
-        if(type=="Engine.LevelInfo" || type.find("SkyZoneInfo")!=std::string::npos || type=="Engine.L2SkyLevelZoneInfo")continue;
-        const auto ps=p->properties(size_t(ref-1));
+        const auto actor=files.actor(p,size_t(ref-1));
+        if(actor.isA("Engine.LevelInfo") || actor.isA("Engine.SkyZoneInfo") || actor.isA("Engine.L2SkyLevelZoneInfo"))continue;
+        const auto& ps=actor.properties;
         if(!flag(ps,"bDeleteMe",false) && prop(ps,"Location"))scene.zoneSeeds.push_back(vector(ps,"Location"));
     }
     scene.terrain=scene.bsp=scene.meshes=scene.volumes=0;
     for(const auto& face:scene.triangles) {
         if(face.kind==1)++scene.terrain;else if(face.kind==2)++scene.volumes;else if(face.kind==3)++scene.bsp;else ++scene.meshes;
     }
+    scene.notes.push_back(files.classSummary());
     return scene;
 }
 Scene read(const std::filesystem::path& path) { Files files(path);return readScene(files,path); }
+Scene readViewport(const std::filesystem::path& path,std::stop_token stop) {
+    if(stop.stop_requested())throw std::runtime_error("Geometry loading cancelled");Files files(path);auto scene=readScene(files,path,nullptr,true,stop);
+    auto sky=[&](Point point){if(scene.world.skyZones.empty())return false;int32_t index=0;size_t steps=0;while(index>=0 && size_t(index)<scene.world.nodes.size() && ++steps<=scene.world.nodes.size()){const auto& node=scene.world.nodes[size_t(index)];const int side=node.normal.x*point.x+node.normal.y*point.y+node.normal.z*point.z>=node.distance ? 1:0;if(node.children[side]<0)return node.zones[side]<scene.world.skyZones.size() && scene.world.skyZones[node.zones[side]];index=node.children[side];}return false;};
+    std::erase_if(scene.triangles,[&](const Triangle& t){if(sky({(t.a.x+t.b.x+t.c.x)/3,(t.a.y+t.b.y+t.c.y)/3,(t.a.z+t.b.z+t.c.z)/3}))return true;if(t.kind!=3)return false;const double lowZ=std::min({t.a.z,t.b.z,t.c.z}),highZ=std::max({t.a.z,t.b.z,t.c.z});if(lowZ<=-16384 && highZ>=16384)for(const auto& bounds:scene.bounds){for(const double x:{bounds.minX,bounds.maxX})if(std::abs(t.a.x-x)<.01 && std::abs(t.b.x-x)<.01 && std::abs(t.c.x-x)<.01)return true;for(const double y:{bounds.minY,bounds.maxY})if(std::abs(t.a.y-y)<.01 && std::abs(t.b.y-y)<.01 && std::abs(t.c.y-y)<.01)return true;}for(const double z:{-16384.,16384.})if(std::abs(t.a.z-z)<.01 && std::abs(t.b.z-z)<.01 && std::abs(t.c.z-z)<.01)return true;for(unsigned axis=0;axis<3;++axis){const double a=axis==0 ? t.a.x:axis==1 ? t.a.y:t.a.z,b=axis==0 ? t.b.x:axis==1 ? t.b.y:t.b.z,c=axis==0 ? t.c.x:axis==1 ? t.c.y:t.c.z;if(std::abs(std::abs(a)-262144.)<1.01 && std::abs(a-b)<.01 && std::abs(a-c)<.01)return true;}return false;});return scene;
+}
 bool terrainZone(const WorldBsp& world,Point location) {
     if(world.nodes.empty() || world.terrainZones.empty())return false;
     int32_t index=0;size_t visited=0;
@@ -858,6 +878,11 @@ int verify(const std::filesystem::path& path) {
     package->data.insert(package->data.end(),modelData.begin(),modelData.end()); package->exports[0].size=offset;
     package->exports.push_back({-2,0,"SimpleCollision",0,offset,modelData.size()}); need(mesh(files,{package,0}).size()==2);
     package->exports[0].size=43; rejects([&] { mesh(files,{package,0}); });
+    Property worldGeometry;worldGeometry.name="bWorldGeometry";worldGeometry.kind=3;worldGeometry.boolean=true;
+    Property actorCollision;actorCollision.name="bCollideActors";actorCollision.kind=3;actorCollision.boolean=false;
+    need(terrainBlocks({worldGeometry,actorCollision}));
+    worldGeometry.boolean=false;need(!terrainBlocks({worldGeometry,actorCollision}));
+    worldGeometry.boolean=true;Property deleted;deleted.name="bDeleteMe";deleted.kind=3;deleted.boolean=true;need(!terrainBlocks({worldGeometry,deleted}));
     Properties ps; Property visible; visible.name="QuadVisibilityBitmap"; visible.kind=9; visible.value={1,4,0,0,0}; ps.push_back(visible);
     const auto bits=bitmap(ps,"QuadVisibilityBitmap",32,0); need(bits.size()==1 && bits[0]==4);
     ps[0].value.pop_back(); rejects([&] { bitmap(ps,"QuadVisibilityBitmap",32,0); });

@@ -89,7 +89,7 @@ legacy ZoneInfo regions or generic physics volumes.
 Four server-profile folders contain one XML file per map. `raw/*.faces.tsv`
 preserves world-space brush faces; `raw/*.zones.tsv` records accepted footprints
 and source Z limits. `911reg-water-report.txt` lists accepted/rejected volumes.
-Concave vertical prisms, separate components and holes are supported. Higher-priority dry prisms are subtracted without expanding the water footprint. Water XML exports still reject sloped brushes, incomplete geometry and overlapping dry volumes with tied or unknown priorities. Geodata additionally supports non-prismatic water through the brush's serialized BSP planes, child nodes and root state. Planes use the full inverse-transpose actor transform, including rotation, pivot, nonuniform scale and reflection. BSP traversal supports concave solids and does not derive planes from potentially warped polygon vertices or approximate the volume with its bounds. Dry/wet priority is evaluated at sampled floor points on that path. Invalid nodes, cyclic trees and ambiguous overlapping priorities remain errors. General custom-class inheritance remains pending.
+Concave vertical prisms, separate components and holes are supported. Higher-priority dry prisms are subtracted without expanding the water footprint. Water XML exports still reject sloped brushes, incomplete geometry and overlapping dry volumes with tied or unknown priorities. Geodata additionally supports non-prismatic water through the brush's serialized BSP planes, child nodes and root state. Planes use the full inverse-transpose actor transform, including rotation, pivot, nonuniform scale and reflection. BSP traversal supports concave solids and does not derive planes from potentially warped polygon vertices or approximate the volume with its bounds. Dry/wet priority is evaluated at sampled floor points on that path. Invalid nodes, cyclic trees and ambiguous overlapping priorities remain errors. Collision and geodata water-volume inheritance resolve through the selected client script packages.
 
 Server coordinates are integers: XY uses nearest rounding, while minimum Z is
 rounded up and maximum Z down to remain inside the source's vertical interval.
@@ -176,9 +176,54 @@ Heights include client surface offsets and truncate toward zero onto the require
 Mesh steps use an unquantized surface-rise limit of 16.32; packed heights do not decide the climb. A steep mesh/BSP trim face does not mark a floor steep when an upward walkable face covers the cell center within the existing 3-unit span merge tolerance below it. Floor heights and collision extents are retained; higher trim and surfaces without center support keep the steep limit. Terrain checks steep slopes before granting movement, even when quantization makes the stored rise small. Air reachability uses an upright circular cylinder with radius 40 and half-height 30, with a 0.01-unit collision margin. Constant-altitude horizontal sweeps and connected vertical clearance intervals validate native collision; empty columns are not automatic seeds. Indoor seeds are validated positions of live BSP-bound ZoneInfo actors and PlayerStarts. Sky seeds require exposed clearance and use terrain zones when those are declared. Air propagation remains within each BSP zone; a zone marker does not whitelist every floor in that zone. Exposed column tops and PlayerStart floors still seed walking reachability; sealed unseeded lower floors are removed. New air-only floors beneath visible terrain are suppressed in BSP zones explicitly marked bTerrainZone. Indoor zones and terrain holes remain eligible, and the original walking-reached floors are retained before filtering. This is a conservative map-metadata rule: an air-only cave below visible terrain in the same outdoor zone can be excluded. Maps without explicit terrain zones retain the unfiltered air policy. The 16-unit graph and three tested altitudes per BSP-constrained horizontal interval are conservative: they can omit narrow routes that require finer routing. Native region edges without full swept-body collision coverage stay closed for air additions; existing walking seam checks remain. Height offsets and quantization remain unchanged. These are trial flight-clearance dimensions, not a measured native wyvern hull. --walking-only disables the air additions; --trace-air X,Y,Z prints a bounded predecessor trace for an air-center position. Isolated teleport-only interiors without a seed require further validation.
 CLI --air-radius N and --air-half-height N override flight clearance only; each accepts finite values from 0.1 through 512 units. Defaults are 40/30; --air-radius 8.2 --air-half-height 22.5 reproduces the earlier player-sized trial. The 40/30 trial is an upright cylinder 80 units wide and 60 high, not a measured native wyvern hull. Its center rises with half-height while preserving the original foot clearance and exported geodata heights. Actual ZoneInfo/PlayerStart positions are still tested without relocation. Walking floors and NSWE do not use these overrides. Generated reports record the dimensions.
 
-Unknown cells are closed at -16352. Map boundaries stay closed unless neighbouring collision supplies a compatible floor. Neighbours are read from the same client directory and same normal/Classic variant; they are never exported just because boundary validation reads them. Missing neighbours stay closed, and unreadable relevant neighbours prevent publishing an unchecked seam. A missing static-mesh package or a missing mesh export inside an existing package excludes that actor with a warning instead of rejecting the map or its neighbours. Missing terrain/model packages, ambiguous mesh references and corrupt collision data still fail validation. A partially zero DrawScale3D produces an actor warning and no collision because its native collision transform is not invertible; world-space cylinder overrides remain independent of draw scale. StaticMeshActor cylinder overrides are read directly from Location, CollisionRadius and CollisionHeight (half-height). They are rasterized analytically against each cell and the terrain footprint, independently of mesh packages, draw scale, rotation or pivot. Zero-radius or zero-height cylinders contribute no volume; invalid dimensions fail validation.
+Unknown cells are closed at -16352. Map boundaries use neighbouring collision when available; missing adjacent maps leave outward NSWE directions open. Neighbours are read from the same client directory; normal maps use normal neighbours, while Classic maps prefer Classic neighbours with normal maps as fallback; they are never exported just because boundary validation reads them. Missing neighbours are logged as open borders, and unreadable existing neighbours prevent publishing an unchecked seam. A missing static-mesh package or a missing mesh export inside an existing package excludes that actor with a warning instead of rejecting the map or its neighbours. Missing terrain/model packages, ambiguous mesh references and corrupt collision data still fail validation. A partially zero DrawScale3D produces an actor warning and no collision because its native collision transform is not invertible; world-space cylinder overrides remain independent of draw scale. StaticMeshActor cylinder overrides are read directly from Location, CollisionRadius and CollisionHeight (half-height). They are rasterized analytically against each cell and the terrain footprint, independently of mesh packages, draw scale, rotation or pivot. Zero-radius or zero-height cylinders contribute no volume; invalid dimensions fail validation.
 
 Packed complex/multilayer geodata supports heights from -16384 through 16376 in steps of eight. Floor candidates outside the raw quantization interval [-16384, 16384) are excluded and counted in a warning, while their solid collision spans still participate in headroom and occlusion. Valid floors continue to export; neither clamping nor signed overflow is used. A map with no remaining walkable cells still fails explicitly.
+
+Geodata collision defaults are resolved from the selected client's serialized
+classes, including custom `.u` packages and map-local classes. The reader walks
+UField/UStruct/UState/UClass metadata, skips bytecode using logical operand sizes
+without executing it, and consumes the bounded default-property stream. Declared
+collision fields begin at their serialized type's zero value; superclass defaults,
+subclass defaults and map actor overrides are applied in that order. Object
+references retain the package that supplied the winning value.
+
+Only collision-relevant class fields are cached, under
+`%LOCALAPPDATA%/911reg/MapExtractor/ClassCache-v1`. Cache identities include the
+SHA-256 of the entire decoded package, class export index and cache schema.
+Cached payloads have their own checksum; invalid entries are rebuilt. Cache write
+failures leave extraction working in memory and are counted in the diagnostics.
+No script execution, editor installation or manually imported client database is
+required. Package defaults are read once per required class; unrelated placeable
+classes do not need scanning. Missing classes, cyclic inheritance, unsupported
+metadata or unsupported blocking primitives fail extraction instead of using
+another client's defaults. Config/localized collision fields are rejected because
+this reader does not simulate config loading or native constructor side effects.
+
+Volume subclasses are identified by ancestry. Blocking checks use resolved
+bCollideActors, bWorldGeometry/bBlockPlayers, bBlockNonZeroExtentTraces and bStatic;
+dynamic actors remain excluded, with an explicit note for nonstatic blocking
+volumes such as Rose ServerBlockingVolume. Terrain follows world collision and
+uses bWorldGeometry rather than bCollideActors; Rose TerrainInfo inherits the
+latter as false. A zero-extent trace flag does not determine
+player-body collision. Cylinders, brush volumes and static meshes retain their
+existing native primitive readers. Class-filtered blocking is rejected until its
+native behavior is implemented. Physics-volume ancestry, water flags and priority
+also use resolved defaults for geodata. Standalone water/door exporters retain
+their existing bundled-default behavior in this batch.
+
+The class reader follows UnrealEd's Core serializers and the fuller legacy
+`ClientDatabasePython/database.py` reader. UnrealEd's current native client
+scanner marks `SerializedClassDefaults=0`; its database files alone cannot supply
+these values. This is a data-only adaptation, not a dependency on editor binaries.
+
+`--verify-class-defaults <new-folder>` prepares isolated synthetic fixtures for
+inheritance, explicit false values, zero defaults, map overrides, reference
+ownership, logical bytecode sizes, cache reuse/invalidation, corruption recovery
+and cycle rejection. On 2026-11-22 the Release build, class-default fixtures,
+native collision fixtures and geodata fixtures passed. Read-only collision imports
+of Rose and GrandCrusade 22_22_Classic also passed with zero errors; the Rose rerun
+used disk-cache entries for all 34 required classes. No deployment was requested.
 
 Collision packages in `System/CustomFiles` take priority over same-named packages
 in the standard StaticMeshes, Textures, System and Maps folders. This preserves
@@ -213,6 +258,106 @@ cylinder overrides are supported. Other selected maps may still finish.
 A set direction bit is what the server walks. It does not measure the step again.
 Test the result in game before replacing a live geodata folder. This is not a claim
 that every retail cell matches.
+
+## View Geodata
+
+The View Geodata button sits below the selection controls inside Choose maps.
+It consumes the checked maps, including those hidden by the text filter. Ctrl+G
+uses the same action. If both variants of a region are checked, one Yes/No dialog
+asks "Load geodata from Classic maps?" Yes prefers Classic and No prefers normal;
+regions with only one selected variant retain it. Unselected variants are never
+substituted. A missing Classic file never falls back to normal geodata.
+
+Discovery stays in the configured Results folder, under Geodata. Current outputs
+use L2J/XX_YY.l2j and Classic/L2J/XX_YY.l2j. Older flat normal outputs,
+Classic/XX_YY.l2j and explicit XX_YY_Classic.l2j files are also recognized without
+mixing variants. One prompt asks "Generate geodata for X maps?", counting only
+missing files. Yes queues all missing selected maps; No loads existing files; Cancel
+abandons opening before generation begins. Accepted missing maps generate serially
+in a background child process. Completed L2J files move into their exact variant
+folder without clearing or replacing existing geodata. Logs and failed outputs
+remain under Geodata/.lab-jobs. The generator receives a new Generated subfolder
+inside each job, because its output directory must not already exist. Before each
+queued generation, discovery runs again and existing variant geodata loads instead.
+Closing the main window terminates only its own
+generation job. Other extraction and output clearing are blocked during that job.
+
+The native resizable viewport reuses ui_theme.h for the main palette, rounded
+controls and vector icons. It has a custom header and buttons, owner-drawn display
+toggles and navigation mode, themed text fields and a cell inspector. The window
+supports WM_PRINTCLIENT plus a complete redraw after its short fade. DPI changes
+recreate fonts. The implementation contains no copied L2MapConv code.
+
+Selected regions share world coordinates. Up to four nearby regions stream into
+CPU/GPU memory together as the camera crosses boundaries; the entire selected set
+remains available through the Jump to map menu. View distance defaults to 65,536 units and cycles from 8,192 to 131,072. The
+residency set remains capped at four nearest regions to bound memory use. Grid and direction marks fade out on cells too small to resolve on screen.
+The toolbar sits inside the viewport card with padding above the canvas.
+GPU instance groups and culling include each
+region's origin, and picking identifies both region and cell. Selection IDs remain
+local to each region. Region borders are excluded from the optional one-way
+heuristic; it does not simulate server movement or classify links across regions.
+
+Each document preserves all L2J block formats, layers and stable (x,y,layer) keys,
+including void cells; only closed -16352 cells are omitted from rendering. Files
+are bounded to 1 GiB and 16 million layers per region. Loading and preparation run
+on a cancellable worker; GPU allocation stays on the UI thread. The old nearby
+scene remains visible until its replacement is ready. This is read-only: no
+modification, save, undo or export operations. Geometry is shaded without textures.
+
+Map geometry toggles (off until enabled) load only TerrainInfo surfaces, visible
+static-mesh actors, blocking volumes and BSP from the exact selected UNR. The
+source path travels with each region, including pre-existing geodata. Static
+meshes use serialized render sections, strip/list indices and transformed
+vertices, following UnrealEd Engine/Inc/UnStaticMesh.h and Src/UnStaticMesh.cpp;
+they are not collision hull stand-ins. Sections whose material slot has EnableCollision disabled are excluded. Blocking volumes remain wireframe even
+though Volume defaults are hidden in game. No lights, sounds, emitters, movers,
+icons, water or unrelated actor primitives are drawn. Geometry loads on the
+existing cancellable worker and uploads on the UI thread. Missing/corrupt source
+assets produce a visible partial-geometry notice while preserving geodata.
+
+Viewport-only BSP filtering uses PF_NotSolid/PF_Invisible/PF_FakeBackdrop/portal flags, sky
+node zones and actor PointRegion SkyZoneInfo/L2SkyLevelZoneInfo references, plus
+world BSP point classification for remaining triangles. This follows UnrealEd's
+UnObj.h flags, UnLevAct.cpp backdrop handling and UnRenderVisibility.cpp sky-zone
+separation. Map enclosure caps at +/-16384 Z, full-height walls on terrain bounds,
+and engine +/-262144 coordinate planes are omitted. These presentation filters
+are separate from collision generation.
+
+Performance: near cells retain original quads and exact picking. Beyond 3072
+units, eligible 64x64-cell chunks use 8x8-cell interpolated patches, reducing
+triangles by 64x for those chunks. Eligibility requires every column to have one
+nonvoid layer, with at most 256 units of height variation per patch; other chunks
+retain exact geometry. This is a display approximation, never a geodata edit.
+Both map geometry batches and cell chunks receive distance/height/frustum culling.
+Immutable buffers hold prepared geometry; CPU upload arrays are released afterward.
+A 10ms timer, vsynced presentation and maximum frame latency 1 pace drawing. The
+footer exposes measured in-app FPS; no benchmark was run for this revision.
+
+The header has minimize, maximize/restore and close buttons. The main window
+explicitly destroys View Geodata during shutdown, releasing mouse capture and
+requesting cancellation/join of its loading worker.
+
+Controls:
+
+- Jump to map selects from the maps passed by the main window.
+- Geodata, Terrain, Static meshes, Blocking volumes and BSP toggle independently.
+- Fly/Orbit switches camera mode. RMB looks or orbits; Alt+LMB orbits; MMB pans.
+- WASD flies along the camera direction, Space ascends, Ctrl descends, Shift
+  accelerates and Alt slows movement. Movement vectors are normalized.
+- Wheel changes fly speed or orbit distance. F focuses a cell; Home frames a map.
+- Grid, arrows, diagnostics, height filtering and floor isolation are independent.
+- Green marks allowed movement, red blocked edges and amber one-way candidates.
+- Ctrl+O opens Jump to map. Escape releases camera capture.
+
+Windows' client-area animation preference disables both the native window fade
+and 320ms cell reveal. `--view-geodata [file.l2j]` remains a standalone entry point.
+
+`--verify-geodata-viewer <new-folder>` contains document and selection fixtures:
+all block layouts, signed heights, origins, layers, addressing, direction links,
+invalid input, cancellation, paired variants, Classic-only selection and discovery
+without variant fallback. `--verify-geodata-viewport <file>` checks shaders, upload,
+drawing, resize, readback and height filtering.
 
 ## Build and command line
 
@@ -275,7 +420,7 @@ the extractor.
 
 ## Next
 
-Mesh fallback, custom classes, an FandC profile and non-prismatic water XML
+Mesh fallback, an FandC profile and non-prismatic water XML
 are still open. Test generated geodata in game
 before replacing a live server.
 
@@ -309,3 +454,44 @@ Performance validation compares the previous and current executables against unc
 T3D text follows the tabbed reference files: CRLF without a BOM, one tab per nesting level, lowercase booleans and fixed six-decimal floats. Brush Origin/Normal/TextureU/TextureV/Vertex components use UnrealEd `%+013.6f` signed zero-padding, including signed zero; larger coordinates expand without truncation. Inline objects and brush blocks appear immediately before their referencing property. Empty Surface placeholders are omitted. This intentionally follows the dominant tabbed reference style consistently, rather than the separate four-space emitter sample. Values are rounded to the reference six-decimal representation rather than nine significant digits.
 
 Local object references use the reference exporter's `myLevel.` package prefix (LevelInfo, brush models, emitter objects, terrain references and delegates); imported asset package paths retain their original names. Already-qualified local paths are preserved.
+
+T3D ambient markers derived from Engine.AmbientSoundObject export as Begin Sound / End Sound with the short concrete Class name, matching the supplied original-editor examples. Other LevelObjects keep their existing wrapper. Name is emitted from the export object's intrinsic name if no stored Name tag exists. Sound properties, enum names and references retain typed serialization; defaults are not synthesized. Local rebuilt UnrealEd currently uses generic LevelObject wrappers, so this deliberately follows the reported original-editor Sound dialect for ambient objects.
+
+## Generation and viewport performance
+
+Sky-cell clearance preparation uses the configured CPU workers with independent
+collision/BSP scratch. Batches cover 64 columns, with at most 262,144 staged
+nodes; work beyond this temporary budget uses serial preparation. Results merge
+in original cell order before the existing deterministic traversal. Seeds, BSP
+zones, cylinder sweeps and clearance thresholds are unchanged. One worker uses
+serial preparation. Stage timings separate loading, rasterization, reachability,
+serialization, and air preparation/traversal.
+
+On one detailed Classic map, alternating 12-worker runs measured median total
+time of 13.88 seconds before this optimization and 6.34 seconds afterward.
+L2J and L2OFF files matched byte for byte; one-worker results also matched.
+With adjacent-map checks enabled, one comparison measured 17.88 versus 10.24
+seconds, again with identical output. These measurements concern the parallel
+preparation change; subsequent collision fixes can intentionally change output.
+Performance depends on the map and hardware.
+
+Disregard adjacent maps is an optional saved Geodata setting. The equivalent CLI
+flag is `--disregard-adjacent-maps`. It skips neighbouring terrain and movement
+seam validation, extends missing terrain edge samples flat, and leaves outward
+NSWE borders open. This is faster, but joins between maps are unchecked. View
+Geodata generation uses the same setting and continues to reuse existing files.
+
+A vertical riser supported by a walkable face beneath the cell centre can use
+the normal 16.32-unit step height. Unsupported faces and taller walls remain
+steep; nonvertical bevels retain the previous three-unit support tolerance.
+`--trace-cell X,Y` reports source triangles, raw floor spans and movement-link
+decisions for up to 16 cells, without changing generation rules.
+
+The viewport caches frustum planes once per frame and combines consecutive
+visible geometry batches. D32 floating-point reversed depth and a translucent
+geodata overlay avoid depth fighting. Terrain uses smooth normals; terrain,
+meshes, BSP, volumes and geodata use distinct colours without game textures.
+AA cycles Off/2x/4x through supported modes, defaulting to 2x. Footer-only updates
+repaint only their strips; decorative main-window animation pauses when unfocused.
+Viewport FPS and periodic-stutter changes have build verification but still need
+broader visual testing; no published FPS speedup is claimed.

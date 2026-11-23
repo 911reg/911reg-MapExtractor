@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <cstddef>
+#include <stop_token>
 namespace extractor { struct Package; }
 namespace extractor::collision {
 struct Point { double x=0,y=0,z=0; Point operator-(Point b) const { return {x-b.x,y-b.y,z-b.z}; } };
@@ -13,7 +14,7 @@ struct Triangle { Point a,b,c,normal; unsigned char kind=0; uint32_t object=0; b
 struct Bounds { double minX=0,minY=0,maxX=0,maxY=0; };
 struct Cylinder { Point location;double radius=0,halfHeight=0;Bounds bounds;uint32_t object=0; };
 struct BspNode { Point normal;double distance=0;int32_t children[2]{-1,-1};uint8_t zones[2]{};bool solid=false; };
-struct WorldBsp { std::vector<BspNode> nodes;std::vector<bool> terrainZones;std::vector<uint32_t> zoneActors;bool rootOutside=true; };
+struct WorldBsp { std::vector<BspNode> nodes;std::vector<bool> terrainZones,skyZones;std::vector<uint32_t> zoneActors;bool rootOutside=true; };
 bool terrainZone(const WorldBsp& world,Point point);
 bool bspEmpty(const WorldBsp& world,Point point);
 struct BspInterval { double low=0,high=1;uint8_t zone=0;bool outside=true; };
@@ -42,6 +43,7 @@ public:
     std::string summary() const;
 };
 Scene read(const std::filesystem::path& map);
+Scene readViewport(const std::filesystem::path& map,std::stop_token stop={});
 std::vector<size_t> liveActors(const Package& package);
 int inspect(const std::filesystem::path& map);
 int verify(const std::filesystem::path& map);

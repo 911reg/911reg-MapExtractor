@@ -13,6 +13,7 @@ Turns Lineage II client maps into server-ready data. One Windows program, no ins
 - **Geodata**: L2J `.l2j` (default) or L2OFF `_conv.dat`, built from the client's own collision
 - **Events**: per-map TXT catalogs, grouped by event ID; empty maps create no catalog
 - **T3D**: map actors grouped by class, with nested objects and original brush polygons
+- **View Geodata**: a built-in 3D viewer for selected maps, with cell inspection, movement arrows, height filters and optional terrain/mesh/BSP overlays
 - **Pathnodes**: `.pn` files for servers that use them
 - Pick exactly which maps to process; Normal and Classic maps both supported
 - One combined file or one file per map
@@ -27,7 +28,8 @@ Turns Lineage II client maps into server-ready data. One Windows program, no ins
 1. Download the [latest Windows x64 release](https://github.com/911reg/911reg-MapExtractor/releases/latest) and run `MapExtractor.exe`. Keep the `Languages` and `profiles` folders next to it.
 2. Choose your game folder.
 3. Pick a task and your server type, check the maps you want, then click **Start**.
-4. Copy the results from the `Output` folder. Each result folder has a short README that says where the files go.
+4. Use **View Geodata** below the map list to inspect existing L2J files or generate missing ones.
+5. Copy the results from the `Output` folder. Each result folder has a short README that says where the files go.
 
 Test new geodata in game before using it on a live server.
 

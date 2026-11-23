@@ -192,12 +192,19 @@ class Writer {
     std::string object(size_t index,const std::string& indent,const std::string& kind,unsigned depth) {
         if(depth>32 || !active.insert(index).second)throw std::runtime_error("Cyclic T3D inline object");
         const auto& p=*map.package;const auto& item=p.exports.at(index);const auto classRef=packages.resolve(map,item.type);
-        std::vector<size_t> children;const auto body=properties(p.properties(index),classRef,indent+"\t",depth,children,false,true);
+        const auto stored=p.properties(index);std::vector<size_t> children;auto body=properties(stored,classRef,indent+"\t",depth,children,false,true);
+        if(kind=="Sound" && std::none_of(stored.begin(),stored.end(),[](const Property& property){return property.name=="Name";}))body+=indent+"\tName="+quote(item.name)+"\r\n";
         active.erase(index);return indent+"Begin "+kind+" Class="+(kind=="LevelObject" ? p.className(index) : leaf(p.className(index)))+" Name="+item.name+"\r\n"+body+indent+"End "+kind+"\r\n";
     }
 public:
     Writer(Packages& packages,const std::shared_ptr<const Package>& package,const std::string& module):packages(packages),map{package,module,0}{}
-    std::string actor(size_t index,bool levelObject){active.clear();emitted.clear();return object(index,"",levelObject ? "LevelObject" : "Actor",0);}
+    std::string actor(size_t index,bool levelObject){
+        active.clear();emitted.clear();std::string kind=levelObject ? "LevelObject":"Actor";
+        if(levelObject){auto cls=packages.resolve(map,map.package->exports.at(index).type);std::set<std::pair<const Package*,size_t>> visited;
+            for(;;){if(visited.size()>=128 || !visited.emplace(cls.package.get(),cls.index).second)throw std::runtime_error("Invalid T3D class inheritance");const auto& definition=cls.package->exports.at(cls.index);if(lower(cls.module)=="engine" && lower(definition.name)=="ambientsoundobject"){kind="Sound";break;}if(!definition.super)break;cls=packages.resolve(cls,definition.super);}
+        }
+        return object(index,"",kind,0);
+    }
 };
 std::vector<std::pair<size_t,bool>> actors(const Package& p) {
     std::vector<std::pair<size_t,bool>> result;unsigned levels=0;

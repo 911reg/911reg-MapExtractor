@@ -1,6 +1,6 @@
 #pragma once
 
-HWND minimizeButton,closeButton,statsCanvas,spinnerCanvas,labCanvas,countersCanvas;
+HWND minimizeButton,closeButton,statsCanvas,spinnerCanvas,labCanvas,countersCanvas,geoViewerButton;
 SIZE fixedWindowSize{1420,900};
 HWND configurationHeading,clearLogButton,saveLogButton,copyLogButton,activityCanvas,brandIcon,versionTag;
 HFONT headingFont,asciiFont,smallAsciiFont,labelFont,smallFont,buttonFont,percentFont,monoSmallFont;
@@ -614,7 +614,8 @@ void studioLayout(HWND window) {
     place(output,x+dp(36),at[9]+(size[9]-dp(20))/2,cw-browse-dp(56),dp(20));place(outputButton,x+cw-browse,at[9],browse,size[9]);
     place(taskLabel,x+dp(22),at[11],cw-dp(22),size[11]);const unsigned shown[]{0,1,3,4,5,6};const int tileWidth=(cw-dp(8)*2)/3;
     for(int i=0;i<6;++i)place(taskTiles[shown[i]],x+(i%3)*(tileWidth+dp(8)),at[13]+(i/3)*(size[13]+dp(6))/2,tileWidth,(size[13]-dp(6))/2);
-    place(combineButton,x,at[15],cw,size[15]);
+    const int optionWidth=(cw-dp(8))/2;place(combineButton,x,at[15],taskMode==3 ? optionWidth:cw,size[15]);
+    place(disregardAdjacentButton,x+optionWidth+dp(8),at[15],optionWidth,size[15]);
     capabilityFits=size[16]>=dp(16);place(capability,x,at[16]+size[16]-dp(18),cw,dp(18));ShowWindow(capability,capabilityFits?SW_SHOW:SW_HIDE);
     place(startButton,x,at[18],cw,size[18]);
     place(openButton,x,at[20],(cw-dp(10))/2,size[20]);place(clearOutputButton,x+(cw+dp(10))/2,at[20],(cw-dp(10))/2,size[20]);
@@ -628,12 +629,13 @@ void studioLayout(HWND window) {
     place(mapFilter,mx+dp(38),searchFrame.top+(dp(36)-dp(20))/2,mw-dp(50),dp(20));
     columnHeader={mx,mapsCard.top+dp(98),mx+mw,mapsCard.top+dp(118)};
     const int listTop=columnHeader.bottom+dp(4);
-    place(mapList,mx,listTop,mw,mapsCard.bottom-dp(62)-listTop);
+    place(mapList,mx,listTop,mw,mapsCard.bottom-dp(108)-listTop);
     const int scroll=GetSystemMetrics(SM_CXVSCROLL)+2;
     ListView_SetColumnWidth(mapList,0,std::max(dp(120),mw-dp(206)-scroll));ListView_SetColumnWidth(mapList,1,dp(90));ListView_SetColumnWidth(mapList,2,dp(116));
     if(labCanvas)place(labCanvas,labCard.left+dp(6),labCard.top+dp(6),labCard.right-labCard.left-dp(12),labCard.bottom-labCard.top-dp(12));
+    if(geoViewerButton)place(geoViewerButton,mx,mapsCard.bottom-dp(50),mw,dp(34));
     const HWND filters[]{selectAllButton,clearMapsButton,preferNormalButton,preferClassicButton};const int filterWidth=(mw-dp(8)*3)/4;
-    for(int i=0;i<4;++i)place(filters[i],mx+i*(filterWidth+dp(8)),mapsCard.bottom-dp(50),filterWidth,dp(34));
+    for(int i=0;i<4;++i)place(filters[i],mx+i*(filterWidth+dp(8)),mapsCard.bottom-dp(94),filterWidth,dp(34));
 
     const int statsWidth=dp(224),statsLeft=consoleCard.right-dp(16)-statsWidth,terminalRight=statsLeft-dp(14);
     place(statsCanvas,statsLeft,consoleCard.top+dp(14),statsWidth,consoleCard.bottom-consoleCard.top-dp(28));place(progressBar,dp(14),dp(44),statsWidth-dp(28),dp(8));
@@ -688,8 +690,8 @@ void drawControl(const DRAWITEMSTRUCT& item) {
         content(glyph,true,selected && !disabled?theme::base:disabled?theme::faint:theme::body,ink,selected?buttonFont:font,r);
         keyboardFocus(item);return;
     }
-    if(id==117) {
-        const bool on=taskMode==3?pathnodesEnabled:combineResults;const int cy=(r.top+r.bottom)/2;
+    if(id==117 || id==156) {
+        const bool on=id==156 ? disregardAdjacentEnabled:taskMode==3?pathnodesEnabled:combineResults;const int cy=(r.top+r.bottom)/2;
         const RECT track{r.left,cy-dp(10),r.left+dp(38),cy+dp(10)};
         if(on && !disabled)roundGradient(dc,track,dpf(10),theme::accentHot,theme::accentDeep,theme::none,true);
         else roundRect(dc,track,dpf(10),theme::inset,hovered?theme::muted:theme::border);
@@ -727,7 +729,7 @@ void drawControl(const DRAWITEMSTRUCT& item) {
     roundRect(dc,r,dpf(8),fill,disabled?theme::line:hovered?mix(theme::border,theme::muted,0.45f):ghost?theme::line:theme::border);
     Icon glyph=Icon::folder;bool hasIcon=true;
     switch(id){case 101:case 102:glyph=Icon::folder;break;case 104:glyph=Icon::folderOpen;break;case 125:case 130:glyph=Icon::trash;break;case 131:glyph=Icon::save;break;
-        case 136:glyph=Icon::copy;break;case 118:glyph=Icon::checkAll;break;case 119:glyph=Icon::close;break;case 128:glyph=Icon::map;break;case 129:glyph=Icon::spark;break;default:hasIcon=false;}
+        case 155:glyph=Icon::layers;break;case 136:glyph=Icon::copy;break;case 118:glyph=Icon::checkAll;break;case 119:glyph=Icon::close;break;case 128:glyph=Icon::map;break;case 129:glyph=Icon::spark;break;default:hasIcon=false;}
     if(id==101 || id==102) {
         const int cx=(r.left+r.right)/2,cy=(r.top+r.bottom)/2;const COLORREF dots=disabled?theme::faint:hovered?theme::accentHot:theme::body;
         for(int i=-1;i<=1;++i)fillCircle(dc,float(cx+i*dp(6)),float(cy),dpf(1.7f),dots);
